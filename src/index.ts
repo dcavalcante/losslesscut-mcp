@@ -8,15 +8,19 @@ const server = new McpServer({ name: 'losslesscut-mcp', version: '0.1.0' }, { ca
 const inputSchema = z.object({});
 const outputSchema = z.object({ reachable: z.boolean(), address: z.string(), detail: z.string() });
 
-server.registerTool('losslesscut_api_status', {
-  title: 'Check LosslessCut API',
-  description: 'Check whether the experimental LosslessCut HTTP API is responding on loopback. This does not inspect the open file or editor state.',
-  inputSchema,
-  outputSchema,
-}, async () => {
-  const result = await checkLosslessCutApi();
-  return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
-});
+server.registerTool(
+  'losslesscut_api_status',
+  {
+    title: 'Check LosslessCut API',
+    description: 'Check whether the experimental LosslessCut HTTP API is responding on loopback. This does not inspect the open file or editor state.',
+    inputSchema,
+    outputSchema,
+  },
+  async () => {
+    const result = await checkLosslessCutApi();
+    return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+  },
+);
 
 const handle = serveStdio(async () => server, {
   onerror(error) {
@@ -31,7 +35,15 @@ async function shutdown(): Promise<void> {
   return stopping;
 }
 
-process.once('SIGINT', () => { void shutdown().finally(() => process.exit(0)); });
-process.once('SIGTERM', () => { void shutdown().finally(() => process.exit(0)); });
-process.stdin.once('end', () => { void shutdown(); });
-process.stdin.once('close', () => { void shutdown(); });
+process.once('SIGINT', () => {
+  void shutdown().finally(() => process.exit(0));
+});
+process.once('SIGTERM', () => {
+  void shutdown().finally(() => process.exit(0));
+});
+process.stdin.once('end', () => {
+  void shutdown();
+});
+process.stdin.once('close', () => {
+  void shutdown();
+});

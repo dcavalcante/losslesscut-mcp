@@ -23,7 +23,9 @@ test('does not treat an unrelated localhost service as LosslessCut', async () =>
 });
 
 test('reports an unavailable loopback API without throwing', async () => {
-  const result = await checkLosslessCutApi(async () => { throw new Error('connection refused'); });
+  const result = await checkLosslessCutApi(async () => {
+    throw new Error('connection refused');
+  });
   assert.equal(result.reachable, false);
   assert.match(result.detail, /connection refused/);
 });

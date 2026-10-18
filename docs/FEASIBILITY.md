@@ -27,10 +27,10 @@ Research checked 2026-10-18 against LosslessCut `master` docs/source and the loc
 
 ## Project setup validation
 
-- The TypeScript project built and `npm test` passed three API-status unit cases (expected LosslessCut root signature, unrelated local response, and connection error). Dependencies were resolved from the already-installed read-only handoff checkout via a temporary symlink; the link and build output were removed afterward. This was not a fresh install.
+- The TypeScript project built and `npm test` passed three API-status unit cases (expected LosslessCut root signature, unrelated local response, and connection error). A fresh `npm ci` from the generated lockfile succeeded. Validation ran under Node.js 26.8.1/npm 11.19.0, not the pinned Node.js 22.23.3/npm 10.9.9; the declared-toolchain check correctly rejects this host.
 - A real MCP stdio initialize and tools/call exchange passed. The API status call returned `reachable: false` because the editor API was not running.
-- This host has Node.js 26.8.1 and npm 11.19.0, while the project pins Node.js 22.23.3 and npm 10.9.9. The toolchain check correctly rejects the host Node version.
-- Registry access timed out and the offline npm cache lacked the pinned Biome package, so a project `package-lock.json` could not be generated and format/lint could not be run here. CI currently installs exact direct dependency versions, but a committed lockfile is still required for reproducible transitive dependency resolution. Generate it in a network-enabled development environment before relying on CI as the release gate.
+- This host has Node.js 26.8.1 and npm 11.19.0 (other installed local Node versions are 24.x), while the project pins Node.js 22.23.3 and npm 10.9.9. The toolchain check correctly rejects the host Node version.
+- The initial offline attempt lacked cached registry metadata, but a registry-enabled install later generated `package-lock.json` and `npm ci` installed the locked dependencies. Biome format, lint, TypeScript check, build, and unit tests pass. Validation on the declared Node/npm versions remains outstanding.
 - The new workspace was initialized as a local Git repository and uses the configured signing setup. No remote was added and nothing was pushed.
 
 ## Existing solutions and product rationale

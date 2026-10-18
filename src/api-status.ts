@@ -19,9 +19,7 @@ export async function checkLosslessCutApi(fetcher: typeof fetch = fetch): Promis
     return {
       reachable,
       address,
-      detail: reachable
-        ? 'LosslessCut HTTP API root responded. The open file and editor state are not exposed by this check.'
-        : `Unexpected API response (HTTP ${response.status}).`,
+      detail: reachable ? 'LosslessCut HTTP API root responded. The open file and editor state are not exposed by this check.' : `Unexpected API response (HTTP ${response.status}).`,
     };
   } catch (error) {
     return {
