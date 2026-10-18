@@ -1,35 +1,47 @@
 # LosslessCut MCP
 
-An MCP server for asking the LosslessCut desktop editor to prepare and export precise, lossless media cuts. The goal is to keep LosslessCut's native project and export behavior at the center, rather than wrapping arbitrary FFmpeg commands.
+An MCP server for preparing and exporting precise cuts through LosslessCut's native editor and project format. It is not a generic FFmpeg tool server: LosslessCut performs edits and exports; FFprobe inspects and verifies media.
 
-**Status: feasibility and project setup.** The stdio server has one diagnostic API status tool; no media editing tools are implemented yet. Real editor acceptance is blocked in this environment (see [feasibility](docs/FEASIBILITY.md)). The initial target is Fedora/Linux.
+**Current MVP:** open a validated LosslessCut `.llc` v2 project, export its selected segments as separate files, and verify the native export events, output paths, streams, and durations. Verified on Fedora/Linux with the source-built LosslessCut 3.69.0 at revision `448348bd`.
 
-## Direction
+## Tools
 
-LosslessCut has an experimental loopback HTTP API for opening files, invoking UI actions, and awaiting export events. Projects use a documented JSON5 `.llc` format; project files contain segment ranges. The proposed first usable workflow is to inspect a media file, create a disposable native project with selected time ranges, open it in LosslessCut, export the cuts, and verify the output with FFprobe. Only the API-backed editor actions count as native integration. FFprobe is used for inspection and verification, not to perform edits.
+- `losslesscut_api_status` checks the API root and verifies the upstream Host/Origin guard.
+- `losslesscut_open_project` opens an authorized `.llc` project. The result is explicitly unverified because LosslessCut currently returns HTTP 200 even when renderer actions fail.
+- `losslesscut_export_project` opens a project, exports its selected segments, and verifies newly created outputs with FFprobe. Ambiguous or confirmation-blocked runs return `uncertain`; do not blindly retry them.
 
-The API is unauthenticated, editor-state introspection is limited, and export completion currently has no demonstrated failure detail. Do not enable the API on an untrusted multi-user machine. See [architecture](docs/ARCHITECTURE.md) and [roadmap](docs/ROADMAP.md).
+The server attaches to a LosslessCut process the operator has started. The integration test harness owns its own isolated app instances, configuration, Electron user-data, fixtures, logs, and cleanup. The product server does not yet launch or supervise the desktop app.
 
-## Development
+## Quick start
 
-Requirements: Node.js 22.23.3, npm 10.9.9, LosslessCut with `--http-api` enabled, and FFmpeg/FFprobe for disposable acceptance fixtures. Current setup:
+Requirements: Node.js 22.23.3, npm 10.9.9, LosslessCut built with `--http-api` support, and FFprobe. Export acceptance additionally uses FFmpeg to generate disposable fixtures.
 
 ```sh
-npm install
-npm run build
+npm ci
+npm run check
+npm test
 npm start
 ```
 
-In a separate terminal, start LosslessCut with its local API enabled:
+Configure your MCP client to run `node /path/to/losslesscut-mcp/dist/index.js` with:
 
-```sh
-losslesscut --http-api
+```text
+LOSSLESSCUT_API_PORT=8080
+LOSSLESSCUT_ALLOWED_ROOTS=/absolute/path/to/authorized/media
+LOSSLESSCUT_CONFIG_DIR=/absolute/path/to/the/running/LosslessCut/config
+LOSSLESSCUT_EXPORT_TIMEOUT_MS=120000
 ```
 
-Then add this process as a stdio MCP server in your client. The only implemented tool currently checks `127.0.0.1:8080`; it cannot edit media yet. The server must use stdio for MCP and must never write logs to stdout.
+Start LosslessCut with `--http-api 8080` and the same `--config-dir`. Configure a dedicated LosslessCut profile with overwrite disabled, separate-segment export selected, open confirmation disabled, cleanup-after-export disabled, and the requested empty output directory as its custom output directory. Export is refused unless these settings can be read and checked. Keep the API bound to loopback and use an upstream build that rejects hostile Host and browser Origin headers; the server disables mutations if that guard is not verified. This API has no authentication against other local processes.
 
-The first release will document the app launch/API configuration explicitly and will not claim Windows or macOS support until tested. Current setup and feature status are tracked in the linked docs.
+To run the real acceptance test on Fedora/Linux:
+
+```sh
+LOSSLESSCUT_EXECUTABLE=/path/to/losslesscut npm run test:acceptance
+```
+
+The harness starts and terminates only the instances it owns. Set `LOSSLESSCUT_KEEP_TEST_OUTPUT=1` to preserve generated inputs, outputs, and logs. See [architecture](docs/ARCHITECTURE.md), [feasibility evidence](docs/FEASIBILITY.md), [capability matrix](docs/CAPABILITIES.md), and [roadmap](docs/ROADMAP.md).
 
 ## License
 
-MIT. LosslessCut is a separate GPL-2.0-licensed application; this project communicates with its documented local API and does not copy or link its implementation.
+MIT. LosslessCut is a separate GPL-2.0-licensed application; this project communicates through its HTTP API and project files and does not copy or link its implementation.
