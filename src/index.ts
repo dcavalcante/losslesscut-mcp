@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { readConfig } from './config.js';
+import { LosslessCutProcess } from './integration/losslesscut-process.js';
 import { createMcpServer } from './mcp/server.js';
 
-const server = createMcpServer(readConfig());
+const config = readConfig();
+const ownedProcess =
+  config.losslessCutExecutable && config.configDir && config.userDataDir
+    ? await LosslessCutProcess.start({
+        executable: config.losslessCutExecutable,
+        port: config.apiPort,
+        configDir: config.configDir,
+        userDataDir: config.userDataDir,
+        startupTimeoutMs: config.startupTimeoutMs,
+      })
+    : undefined;
+const server = createMcpServer(config);
 
 const handle = serveStdio(async () => server, {
   onerror(error) {
@@ -14,7 +26,9 @@ const handle = serveStdio(async () => server, {
 let stopping: Promise<void> | undefined;
 async function shutdown(): Promise<void> {
   if (stopping) return stopping;
-  stopping = handle.close();
+  stopping = handle.close().finally(async () => {
+    await ownedProcess?.stop();
+  });
   return stopping;
 }
 

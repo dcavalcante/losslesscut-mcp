@@ -6,6 +6,9 @@ export interface AppConfig {
   exportTimeoutMs: number;
   allowedRoots: string[];
   configDir?: string;
+  losslessCutExecutable?: string;
+  userDataDir?: string;
+  startupTimeoutMs: number;
   ffprobePath: string;
 }
 
@@ -20,6 +23,11 @@ function readBoundedInteger(value: string | undefined, fallback: number, minimum
 
 export function readConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const configDir = env['LOSSLESSCUT_CONFIG_DIR'];
+  const executable = env['LOSSLESSCUT_EXECUTABLE'];
+  const userDataDir = env['LOSSLESSCUT_USER_DATA_DIR'];
+  if ((executable || userDataDir) && !(executable && userDataDir && configDir)) {
+    throw new Error('Set LOSSLESSCUT_EXECUTABLE, LOSSLESSCUT_CONFIG_DIR, and LOSSLESSCUT_USER_DATA_DIR together to let MCP own an isolated LosslessCut process.');
+  }
   return {
     apiPort: readBoundedInteger(env['LOSSLESSCUT_API_PORT'], 8080, 1, 65535, 'LOSSLESSCUT_API_PORT'),
     apiTimeoutMs: readBoundedInteger(env['LOSSLESSCUT_API_TIMEOUT_MS'], 5_000, 100, 120_000, 'LOSSLESSCUT_API_TIMEOUT_MS'),
@@ -29,6 +37,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       .filter(Boolean)
       .map(root => resolve(root)),
     ...(configDir ? { configDir: resolve(configDir) } : {}),
+    ...(executable ? { losslessCutExecutable: resolve(executable) } : {}),
+    ...(userDataDir ? { userDataDir: resolve(userDataDir) } : {}),
+    startupTimeoutMs: readBoundedInteger(env['LOSSLESSCUT_STARTUP_TIMEOUT_MS'], 30_000, 1_000, 120_000, 'LOSSLESSCUT_STARTUP_TIMEOUT_MS'),
     ffprobePath: env['LOSSLESSCUT_FFPROBE_PATH'] || 'ffprobe',
   };
 }

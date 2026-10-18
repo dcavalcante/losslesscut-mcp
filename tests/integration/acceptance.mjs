@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
+import { createServer as createHttpServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
@@ -11,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { LosslessCutProcess } from '../../dist/integration/losslesscut-process.js';
 
 const execFile = promisify(execFileCallback);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -22,13 +24,21 @@ const workspace = await mkdtemp(join(tmpdir(), 'losslesscut-mcp-acceptance-'));
 const inputDir = join(workspace, 'input');
 const firstOutputDir = join(workspace, 'output-success');
 const secondOutputDir = join(workspace, 'output-confirmation');
-const configDir = join(workspace, 'config');
+const configDir = join(workspace, 'config-owned');
+const ordinaryConfigDir = join(workspace, 'config-ordinary');
+const confirmationConfigDir = join(workspace, 'config-confirmation');
 const userDataDir = join(workspace, 'userdata');
 const secondUserDataDir = join(workspace, 'userdata-confirmation');
+const ordinaryHomeDir = join(workspace, 'ordinary-home');
+const ordinaryOutputDir = join(workspace, 'output-ordinary');
 const logsDir = join(workspace, 'logs');
-await Promise.all([inputDir, firstOutputDir, secondOutputDir, configDir, userDataDir, secondUserDataDir, logsDir].map(dir => mkdir(dir, { recursive: true })));
+await Promise.all(
+  [inputDir, firstOutputDir, secondOutputDir, configDir, ordinaryConfigDir, confirmationConfigDir, userDataDir, secondUserDataDir, ordinaryHomeDir, ordinaryOutputDir, logsDir].map(dir =>
+    mkdir(dir, { recursive: true }),
+  ),
+);
 const mediaPath = join(inputDir, 'fixture.mp4');
-const projectPath = join(inputDir, 'fixture.llc');
+let projectPath;
 async function availablePort() {
   const server = createServer();
   await new Promise((resolvePromise, reject) => {
@@ -41,8 +51,8 @@ async function availablePort() {
   return address.port;
 }
 
-async function waitForApi(app, port, appLogPath, appErrPath) {
-  const deadline = Date.now() + 30_000;
+async function waitForApi(app, port, appLogPath, appErrPath, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
   let lastError = 'not ready';
   while (Date.now() < deadline) {
     if (app.exitCode != null) throw new Error(`LosslessCut exited during startup with ${app.exitCode}; inspect ${appLogPath} and ${appErrPath}`);
@@ -72,7 +82,7 @@ async function waitForRendererReady(app, appLogPath) {
   throw new Error(`LosslessCut API was ready but the renderer readiness marker did not appear in ${appLogPath}`);
 }
 
-async function startLosslessCut({ port, outputDirectory, userDir, exportConfirmEnabled, label }) {
+async function startLosslessCut({ port, outputDirectory, configDirectory, userDir, homeDir, exportConfirmEnabled, label, startupTimeoutMs, allowApiStartupFailure = false }) {
   const appLogPath = join(logsDir, `losslesscut-${label}.log`);
   const appErrPath = join(logsDir, `losslesscut-${label}.stderr.log`);
   const settings = {
@@ -92,8 +102,10 @@ async function startLosslessCut({ port, outputDirectory, userDir, exportConfirmE
   };
   const stdout = createWriteStream(appLogPath, { flags: 'a' });
   const stderr = createWriteStream(appErrPath, { flags: 'a' });
-  const app = spawn(executable, [`--user-data-dir=${userDir}`, '--http-api', String(port), '--config-dir', configDir, '--settings-json', JSON.stringify(settings)], {
+  const args = [...(userDir ? [`--user-data-dir=${userDir}`] : []), '--http-api', String(port), '--config-dir', configDirectory, '--settings-json', JSON.stringify(settings)];
+  const app = spawn(executable, args, {
     cwd: workspace,
+    env: { ...process.env, ...(homeDir ? { HOME: homeDir, XDG_CONFIG_HOME: join(homeDir, '.config'), XDG_CACHE_HOME: join(homeDir, '.cache') } : {}) },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   app.stdout.pipe(stdout);
@@ -102,10 +114,21 @@ async function startLosslessCut({ port, outputDirectory, userDir, exportConfirmE
     stdout.end();
     stderr.end();
   });
-  await waitForApi(app, port, appLogPath, appErrPath);
-  await waitForRendererReady(app, appLogPath);
+  app.port = port;
+  app.configDirectory = configDirectory;
+  app.userDataDirectory = userDir ?? join(homeDir, '.config', 'losslesscut');
   app.logPath = appLogPath;
   app.stderrLogPath = appErrPath;
+  try {
+    await waitForApi(app, port, appLogPath, appErrPath, startupTimeoutMs);
+    await waitForRendererReady(app, appLogPath);
+  } catch (error) {
+    app.startupError = error instanceof Error ? error.message : String(error);
+    if (!allowApiStartupFailure) {
+      await stopOwnedProcess(app);
+      throw error;
+    }
+  }
   return app;
 }
 
@@ -163,14 +186,16 @@ async function stopOwnedProcess(child) {
   return result;
 }
 
-function mcpClient(port, exportTimeoutMs) {
+function mcpClient(port, exportTimeoutMs, appConfigDir = configDir) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(root, 'dist', 'index.js')],
     env: {
       ...process.env,
       LOSSLESSCUT_API_PORT: String(port),
-      LOSSLESSCUT_CONFIG_DIR: configDir,
+      LOSSLESSCUT_CONFIG_DIR: appConfigDir,
+      LOSSLESSCUT_EXECUTABLE: '',
+      LOSSLESSCUT_USER_DATA_DIR: '',
       LOSSLESSCUT_ALLOWED_ROOTS: workspace,
       LOSSLESSCUT_EXPORT_TIMEOUT_MS: String(exportTimeoutMs),
     },
@@ -222,20 +247,27 @@ function nativeAction(port, action, body) {
 }
 
 let app;
+let ownedLifecycle;
+let ordinaryApp;
 let confirmationApp;
 let mcp;
 let confirmationMcp;
 let firstExitCode;
 let secondExitCode;
 let firstAppPid;
+let ordinaryAppPid;
 let secondAppPid;
 let mcpPid;
 let confirmationMcpPid;
 let firstAppLogPath;
 let firstAppErrPath;
+let ordinaryAppLogPath;
+let ordinaryAppErrPath;
 let secondAppLogPath;
 let secondAppErrPath;
 let lifecycleProbe;
+let occupiedPortProbe;
+let isolationProbe;
 try {
   await execFile(
     process.env['FFMPEG_PATH'] || 'ffmpeg',
@@ -274,31 +306,119 @@ try {
     ],
     { timeout: 30_000 },
   );
-  await writeFile(
-    projectPath,
-    `${JSON.stringify(
-      {
-        version: 2,
-        mediaFileName: 'fixture.mp4',
-        cutSegments: [
-          { start: 1, end: 3, name: 'keep-1', selected: true },
-          { start: 5, end: 7, name: 'keep-2', selected: true },
-        ],
-      },
-      null,
-      2,
-    )}\n`,
-  );
-  const sourceHashes = await execFile('sha256sum', [mediaPath, projectPath]);
-  const port = await availablePort();
-  app = await startLosslessCut({ port, outputDirectory: firstOutputDir, userDir: userDataDir, exportConfirmEnabled: false, label: 'success' });
+  const sourceHashes = await execFile('sha256sum', [mediaPath]);
+
+  // Hold an unrelated loopback service on a port, then launch only a disposable
+  // LosslessCut child against it. The harness must never kill the listener.
+  const occupiedPort = await availablePort();
+  const unrelatedService = createHttpServer((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/plain' });
+    response.end('unrelated-service');
+  });
+  await new Promise((resolvePromise, reject) => {
+    unrelatedService.once('error', reject);
+    unrelatedService.listen(occupiedPort, '127.0.0.1', resolvePromise);
+  });
+  let lifecyclePortFailure;
+  try {
+    await LosslessCutProcess.start({
+      executable,
+      port: occupiedPort,
+      configDir: join(workspace, 'config-lifecycle-port-conflict'),
+      userDataDir: join(workspace, 'userdata-lifecycle-port-conflict'),
+      startupTimeoutMs: 1_000,
+    });
+  } catch (error) {
+    lifecyclePortFailure = error instanceof Error ? error.message : String(error);
+  }
+  assert.match(lifecyclePortFailure, /port .* is unavailable/);
+  assert.equal(await fetch(`http://127.0.0.1:${occupiedPort}/`).then(response => response.text()), 'unrelated-service');
+  const failedLaunch = await startLosslessCut({
+    port: occupiedPort,
+    outputDirectory: firstOutputDir,
+    configDirectory: join(workspace, 'config-port-conflict'),
+    userDir: join(workspace, 'userdata-port-conflict'),
+    exportConfirmEnabled: false,
+    label: 'port-conflict',
+    startupTimeoutMs: 3_000,
+    allowApiStartupFailure: true,
+  });
+  const unrelatedStillBound = await fetch(`http://127.0.0.1:${occupiedPort}/`).then(response => response.text());
+  assert.equal(unrelatedStillBound, 'unrelated-service');
+  const failedLaunchExit = await stopOwnedProcess(failedLaunch);
+  const unrelatedAfterCleanup = await fetch(`http://127.0.0.1:${occupiedPort}/`).then(response => response.text());
+  assert.equal(unrelatedAfterCleanup, 'unrelated-service');
+  await new Promise((resolvePromise, reject) => unrelatedService.close(error => (error ? reject(error) : resolvePromise())));
+  occupiedPortProbe = {
+    port: occupiedPort,
+    startupError: failedLaunch.startupError,
+    appPid: failedLaunch.pid,
+    appExit: failedLaunchExit,
+    unrelatedServiceSurvivedCleanup: unrelatedAfterCleanup === 'unrelated-service',
+    appLogs: failedLaunch.logPath,
+    appStderr: failedLaunch.stderrLogPath,
+    productLifecyclePreflightError: lifecyclePortFailure,
+  };
+
+  // Run a conventional disposable profile (temporary HOME, Electron-selected
+  // user-data location) beside the explicit MCP candidate profile.
+  const ordinaryPort = await availablePort();
+  ordinaryApp = await startLosslessCut({
+    port: ordinaryPort,
+    outputDirectory: ordinaryOutputDir,
+    configDirectory: ordinaryConfigDir,
+    homeDir: ordinaryHomeDir,
+    exportConfirmEnabled: false,
+    label: 'ordinary',
+  });
+  ordinaryAppPid = ordinaryApp.pid;
+  ordinaryAppLogPath = ordinaryApp.logPath;
+  ordinaryAppErrPath = ordinaryApp.stderrLogPath;
+  const ownedPort = await availablePort();
+  const candidateSettings = {
+    exportConfirmEnabled: false,
+    enableCustomOutDir: true,
+    recentCustomOutDirs: [firstOutputDir],
+    enableOverwriteOutput: false,
+    autoMerge: false,
+    invertCutSegments: false,
+    segmentsToChaptersOnly: false,
+    enableAskForFileOpenAction: false,
+    hideNotifications: 'all',
+    hideOsNotifications: 'all',
+    enableUpdateCheck: false,
+    askBeforeClose: true,
+    cleanupChoices: { trashTmpFiles: true, askForCleanup: false, closeFile: false, cleanupAfterExport: false },
+  };
+  ownedLifecycle = await LosslessCutProcess.start({
+    executable,
+    port: ownedPort,
+    configDir,
+    userDataDir,
+    startupTimeoutMs: 30_000,
+    cwd: workspace,
+    stdoutPath: join(logsDir, 'losslesscut-owned-candidate.log'),
+    stderrPath: join(logsDir, 'losslesscut-owned-candidate.stderr.log'),
+    settings: candidateSettings,
+  });
+  app = ownedLifecycle.child;
+  Object.assign(app, {
+    port: ownedPort,
+    configDirectory: configDir,
+    userDataDirectory: userDataDir,
+    logPath: join(logsDir, 'losslesscut-owned-candidate.log'),
+    stderrLogPath: join(logsDir, 'losslesscut-owned-candidate.stderr.log'),
+  });
   firstAppPid = app.pid;
   firstAppLogPath = app.logPath;
   firstAppErrPath = app.stderrLogPath;
-  lifecycleProbe = await probeSameProfileSecondLaunch(port);
-  mcp = mcpClient(port, 30_000);
+  lifecycleProbe = await probeSameProfileSecondLaunch(ownedPort);
+  mcp = mcpClient(ownedPort, 30_000, configDir);
   await mcp.connect();
   mcpPid = mcp.transport.pid;
+
+  const ordinaryMcp = mcpClient(ordinaryPort, 30_000, ordinaryConfigDir);
+  await ordinaryMcp.connect();
 
   const available = await mcp.client.callTool({ name: 'losslesscut_api_status', arguments: {} });
   assert.equal(available.structuredContent.reachable, true);
@@ -310,28 +430,86 @@ try {
   assert.equal(denied.structuredContent.status, 'error');
   assert.equal(denied.structuredContent.code, 'path_not_authorized');
 
+  const mediaInspection = await mcp.client.callTool({ name: 'losslesscut_inspect_media', arguments: { path: mediaPath } });
+  assert.equal(mediaInspection.structuredContent.status, 'verified', JSON.stringify(mediaInspection.structuredContent));
+  const created = await mcp.client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath,
+      destinationPath: join(inputDir, 'mcp-created.llc'),
+      segments: [
+        { start: 1, end: 3, name: 'keep-1' },
+        { start: 5, end: 7, name: 'keep-2' },
+      ],
+    },
+  });
+  assert.equal(created.structuredContent.status, 'created', JSON.stringify(created.structuredContent));
+  projectPath = created.structuredContent.projectPath;
+  const generatedInspection = await mcp.client.callTool({ name: 'losslesscut_inspect_project', arguments: { projectPath } });
+  assert.equal(generatedInspection.structuredContent.status, 'verified', JSON.stringify(generatedInspection.structuredContent));
+  assert.equal(generatedInspection.structuredContent.segmentCount, 2);
+  assert.equal(generatedInspection.structuredContent.segments.filter(segment => segment.selected).length, 2);
+
   const exported = await mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: firstOutputDir } });
   assert.equal(exported.structuredContent.status, 'verified', JSON.stringify(exported.structuredContent));
   assert.equal(exported.structuredContent.outputs.length, 2);
   for (const output of exported.structuredContent.outputs) await assertMedia(output.path);
-  assert.equal((await execFile('sha256sum', [mediaPath, projectPath])).stdout, sourceHashes.stdout);
-  const seekProbe = await nativeAction(port, 'goToTimecodeDirect', { time: '00:02' });
-  const invalidActionProbe = await nativeAction(port, 'losslesscutMcpInvalidAction');
+  const ordinaryExport = await ordinaryMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: ordinaryOutputDir } });
+  assert.equal(ordinaryExport.structuredContent.status, 'verified', JSON.stringify(ordinaryExport.structuredContent));
+  assert.equal(ordinaryExport.structuredContent.outputs.length, 2);
+  for (const output of ordinaryExport.structuredContent.outputs) await assertMedia(output.path);
+  assert.ok(exported.structuredContent.outputs.every(output => output.path.startsWith(`${firstOutputDir}/`)));
+  assert.ok(ordinaryExport.structuredContent.outputs.every(output => output.path.startsWith(`${ordinaryOutputDir}/`)));
+  assert.notDeepEqual(
+    exported.structuredContent.outputs.map(output => output.path),
+    ordinaryExport.structuredContent.outputs.map(output => output.path),
+  );
+  assert.equal((await execFile('sha256sum', [mediaPath])).stdout, sourceHashes.stdout);
+  const seekProbe = await nativeAction(ownedPort, 'goToTimecodeDirect', { time: '00:02' });
+  const invalidActionProbe = await nativeAction(ownedPort, 'losslesscutMcpInvalidAction');
   assert.equal(seekProbe.status, 200);
   assert.equal(invalidActionProbe.status, 200);
   assert.equal(invalidActionProbe.body, '');
 
+  const ownedRootStillReady = await fetch(`http://127.0.0.1:${ownedPort}/`).then(response => response.status === 200);
+  const ordinaryRootStillReady = await fetch(`http://127.0.0.1:${ordinaryPort}/`).then(response => response.status === 200);
+  assert.equal(ownedRootStillReady, true);
+  assert.equal(ordinaryRootStillReady, true);
+  isolationProbe = {
+    ordinary: {
+      pid: ordinaryApp.pid,
+      port: ordinaryPort,
+      configDir: ordinaryApp.configDirectory,
+      userDataDir: ordinaryApp.userDataDirectory,
+      outputDirectory: ordinaryOutputDir,
+      outputs: ordinaryExport.structuredContent.outputs,
+    },
+    mcpCandidate: { pid: app.pid, port: ownedPort, configDir: app.configDirectory, userDataDir: app.userDataDirectory, outputDirectory: firstOutputDir, outputs: exported.structuredContent.outputs },
+    bothApisReadyAfterNativeExports: { ordinary: ordinaryRootStillReady, mcpCandidate: ownedRootStillReady },
+  };
+  await ordinaryMcp.client.close();
+  await ordinaryMcp.transport.close();
   await mcp.client.close();
   await mcp.transport.close();
-  firstExitCode = await stopOwnedProcess(app);
+  await stopOwnedProcess(ordinaryApp);
+  ordinaryApp = undefined;
+  firstExitCode = await ownedLifecycle.stop();
+  ownedLifecycle = undefined;
   app = undefined;
 
   const secondPort = await availablePort();
-  confirmationApp = await startLosslessCut({ port: secondPort, outputDirectory: secondOutputDir, userDir: secondUserDataDir, exportConfirmEnabled: true, label: 'confirmation' });
+  confirmationApp = await startLosslessCut({
+    port: secondPort,
+    outputDirectory: secondOutputDir,
+    configDirectory: confirmationConfigDir,
+    userDir: secondUserDataDir,
+    exportConfirmEnabled: true,
+    label: 'confirmation',
+  });
   secondAppPid = confirmationApp.pid;
   secondAppLogPath = confirmationApp.logPath;
   secondAppErrPath = confirmationApp.stderrLogPath;
-  confirmationMcp = mcpClient(secondPort, 1_000);
+  confirmationMcp = mcpClient(secondPort, 1_000, confirmationConfigDir);
   await confirmationMcp.connect();
   confirmationMcpPid = confirmationMcp.transport.pid;
   const uncertain = await confirmationMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: secondOutputDir } });
@@ -348,13 +526,15 @@ try {
 
   const report = {
     status: 'passed',
-    applicationPids: [firstAppPid, secondAppPid],
+    applicationPids: [ordinaryAppPid, firstAppPid, secondAppPid],
     mcpPids: [mcpPid, confirmationMcpPid],
     firstApplicationExit: firstExitCode,
     confirmationApplicationExit: secondExitCode,
-    applicationLogs: [firstAppLogPath, secondAppLogPath],
-    stderrLogs: [firstAppErrPath, secondAppErrPath],
+    applicationLogs: [ordinaryAppLogPath, firstAppLogPath, secondAppLogPath],
+    stderrLogs: [ordinaryAppErrPath, firstAppErrPath, secondAppErrPath],
     isolatedProfile: { configDir, userDataDir },
+    occupiedPort: occupiedPortProbe,
+    concurrentProfileIsolation: isolationProbe,
     sameProfileSecondLaunch: lifecycleProbe,
     evidenceDirectory: workspace,
     exported: exported.structuredContent.outputs,
@@ -367,7 +547,7 @@ try {
   await writeFile(join(logsDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
 } finally {
-  await Promise.all([stopOwnedProcess(app), stopOwnedProcess(confirmationApp)]);
+  await Promise.all([ownedLifecycle?.stop() ?? stopOwnedProcess(app), stopOwnedProcess(ordinaryApp), stopOwnedProcess(confirmationApp)]);
   await Promise.all([mcp ? mcp.client.close().catch(() => undefined) : Promise.resolve(), confirmationMcp ? confirmationMcp.client.close().catch(() => undefined) : Promise.resolve()]);
   if (process.env['LOSSLESSCUT_KEEP_TEST_OUTPUT'] !== '1') await rm(workspace, { recursive: true, force: true });
   else console.log(`Acceptance evidence retained at ${workspace}`);

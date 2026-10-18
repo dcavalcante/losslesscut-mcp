@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -19,6 +19,8 @@ const v2Path = join(authorized, 'project.llc');
 const malformedPath = join(authorized, 'malformed.llc');
 const invalidRangePath = join(authorized, 'invalid-range.llc');
 const traversalPath = join(authorized, 'traversal.llc');
+const createdPath = join(authorized, 'created.llc');
+const outsideLink = join(authorized, 'outside-link');
 const outsideMediaPath = join(outside, 'secret.mp4');
 let client;
 let clientTransport;
@@ -81,6 +83,7 @@ try {
   await writeFile(malformedPath, '{not valid json');
   await writeFile(invalidRangePath, JSON.stringify({ version: 2, cutSegments: [{ start: 2, end: 1, name: 'bad' }] }));
   await writeFile(traversalPath, JSON.stringify({ version: 2, mediaFileName: '../outside/secret.mp4', cutSegments: [] }));
+  await symlink(outside, outsideLink);
 
   const hashesBefore = await Promise.all(
     [mediaPath, v1Path, v2Path, malformedPath, invalidRangePath, traversalPath].map(async path => [
@@ -106,6 +109,7 @@ try {
   const toolList = await client.listTools();
   assert.ok(toolList.tools.some(tool => tool.name === 'losslesscut_inspect_media'));
   assert.ok(toolList.tools.some(tool => tool.name === 'losslesscut_inspect_project'));
+  assert.ok(toolList.tools.some(tool => tool.name === 'losslesscut_create_project'));
 
   const media = await client.callTool({ name: 'losslesscut_inspect_media', arguments: { path: mediaPath } });
   assert.equal(media.structuredContent.status, 'verified', JSON.stringify(media.structuredContent));
@@ -126,6 +130,73 @@ try {
   assert.equal(v2.structuredContent.segmentCount, 2);
   assert.equal(v2.structuredContent.segments[0].selected, true);
   assert.deepEqual(v2.structuredContent.segments[0].tags, { purpose: 'test' });
+
+  const sourceHash = createHash('sha256')
+    .update(await readFile(mediaPath))
+    .digest('hex');
+  const created = await client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath,
+      destinationPath: createdPath,
+      segments: [
+        { start: 0.2, end: 0.8, name: 'first', tags: { topic: 'intro' } },
+        { start: 1.1, end: 1.7, name: 'second', selected: false },
+      ],
+    },
+  });
+  assert.equal(created.structuredContent.status, 'created', JSON.stringify(created.structuredContent));
+  assert.equal(created.structuredContent.segmentCount, 2);
+  assert.equal(created.structuredContent.segments[0].selected, true);
+  const createdInspection = await client.callTool({ name: 'losslesscut_inspect_project', arguments: { projectPath: createdPath } });
+  assert.equal(createdInspection.structuredContent.status, 'verified', JSON.stringify(createdInspection.structuredContent));
+  assert.deepEqual(
+    createdInspection.structuredContent.segments.map(({ start, end, name, selected }) => ({ start, end, name, selected })),
+    [
+      { start: 0.2, end: 0.8, name: 'first', selected: true },
+      { start: 1.1, end: 1.7, name: 'second', selected: false },
+    ],
+  );
+  assert.equal(
+    createHash('sha256')
+      .update(await readFile(mediaPath))
+      .digest('hex'),
+    sourceHash,
+  );
+  for (const [args, code] of [
+    [{ mediaPath, destinationPath: createdPath, segments: [{ start: 0, end: 1 }] }, 'project_already_exists'],
+    [{ mediaPath, destinationPath: join(outside, 'outside.llc'), segments: [{ start: 0, end: 1 }] }, 'path_not_authorized'],
+    [{ mediaPath, destinationPath: join(authorized, 'bad.txt'), segments: [{ start: 0, end: 1 }] }, 'invalid_project_path'],
+  ]) {
+    const result = await client.callTool({ name: 'losslesscut_create_project', arguments: args });
+    assert.equal(result.isError, true, JSON.stringify(result.structuredContent));
+    assert.equal(result.structuredContent.code, code);
+  }
+  const symlinkCreate = await client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath,
+      destinationPath: join(outsideLink, 'escaped.llc'),
+      segments: [{ start: 0, end: 1 }],
+    },
+  });
+  assert.equal(symlinkCreate.isError, true);
+  assert.equal(symlinkCreate.structuredContent.code, 'path_not_authorized');
+  const invalidRange = await client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath,
+      destinationPath: join(authorized, 'invalid.llc'),
+      segments: [{ start: 1, end: 1 }],
+    },
+  });
+  assert.equal(invalidRange.isError, true);
+  const pastEnd = await client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: { mediaPath, destinationPath: join(authorized, 'past-end.llc'), segments: [{ start: 1, end: 3 }] },
+  });
+  assert.equal(pastEnd.isError, true);
+  assert.equal(pastEnd.structuredContent.code, 'invalid_segments');
 
   for (const [name, args, code] of [
     ['losslesscut_inspect_media', { path: outsideMediaPath }, 'path_not_authorized'],
@@ -150,10 +221,18 @@ try {
     ]),
   );
   assert.deepEqual(hashesAfter, hashesBefore, 'Inspection must not modify project or media inputs.');
-  assert.deepEqual((await readdir(authorized)).sort(), namesBefore, 'Inspection must not create files beside its inputs.');
+  assert.deepEqual((await readdir(authorized)).sort(), [...namesBefore, 'created.llc'].sort(), 'Only explicit project creation may add a file beside inputs.');
   console.log(
     JSON.stringify(
-      { status: 'passed', tools: ['losslesscut_inspect_media', 'losslesscut_inspect_project'], checks: 10, media: media.structuredContent, v1: v1.structuredContent, v2: v2.structuredContent },
+      {
+        status: 'passed',
+        tools: ['losslesscut_inspect_media', 'losslesscut_inspect_project', 'losslesscut_create_project'],
+        checks: 16,
+        media: media.structuredContent,
+        v1: v1.structuredContent,
+        v2: v2.structuredContent,
+        created: created.structuredContent,
+      },
       null,
       2,
     ),

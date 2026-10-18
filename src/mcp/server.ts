@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import type { AppConfig } from '../config.js';
 import { inspectMedia, inspectProject } from '../integration/inspection.js';
+import { createProject } from '../integration/projects.js';
 import { LosslessCutApi } from '../integration/losslesscut-api.js';
 import { exportProjectWorkflow, openProjectWorkflow, toToolError } from '../integration/workflows.js';
 
@@ -15,6 +16,24 @@ const statusSchema = z.object({
 const projectInputSchema = z.object({
   projectPath: z.string().min(1).describe('Path to a LosslessCut LLC v2 project inside an authorized root.'),
   outputDirectory: z.string().min(1).describe('Existing, empty, authorized directory configured as LosslessCut’s custom output directory.'),
+});
+
+const createProjectInputSchema = z.object({
+  mediaPath: z.string().min(1).describe('Existing media file inside an authorized root.'),
+  destinationPath: z.string().min(1).describe('New .llc path whose existing parent directory is inside an authorized root.'),
+  segments: z
+    .array(
+      z
+        .object({
+          start: z.number().finite().nonnegative(),
+          end: z.number().finite().positive(),
+          name: z.string().trim().min(1).optional(),
+          tags: z.record(z.string(), z.string()).optional(),
+          selected: z.boolean().optional(),
+        })
+        .refine(segment => segment.end > segment.start, 'end must be greater than start'),
+    )
+    .min(1),
 });
 
 const openOutputSchema = z.object({
@@ -44,6 +63,21 @@ const inspectionErrorSchema = z.object({
   message: z.string(),
   code: z.string(),
 });
+
+const createProjectOutputSchema = z.union([
+  z.object({
+    status: z.literal('created'),
+    message: z.string(),
+    projectPath: z.string(),
+    mediaPath: z.string(),
+    version: z.literal(2),
+    segmentCount: z.number(),
+    segments: z.array(
+      z.object({ index: z.number(), start: z.number(), end: z.number(), name: z.string(), selected: z.boolean(), tags: z.record(z.string(), z.string()).optional(), kind: z.literal('segment') }),
+    ),
+  }),
+  inspectionErrorSchema,
+]);
 
 const mediaInspectionOutputSchema = z.union([
   z.object({
@@ -149,6 +183,36 @@ export function createMcpServer(config: AppConfig): McpServer {
     async ({ projectPath }) => {
       try {
         return toolResult(await inspectProject(config, projectPath));
+      } catch (error) {
+        return toolResult({ ...toToolError(error) });
+      }
+    },
+  );
+
+  server.registerTool(
+    'losslesscut_create_project',
+    {
+      title: 'Create LLC project',
+      description: 'Create a new LLC v2 project referencing an authorized existing media file and validated segment ranges. Refuses overwrite, does not change the source, and does not export.',
+      inputSchema: createProjectInputSchema,
+      outputSchema: createProjectOutputSchema,
+    },
+    async ({ mediaPath, destinationPath, segments }) => {
+      try {
+        return toolResult(
+          await createProject(
+            config,
+            mediaPath,
+            destinationPath,
+            segments.map(segment => ({
+              start: segment.start,
+              end: segment.end,
+              ...(segment.name == null ? {} : { name: segment.name }),
+              ...(segment.tags == null ? {} : { tags: segment.tags }),
+              ...(segment.selected == null ? {} : { selected: segment.selected }),
+            })),
+          ),
+        );
       } catch (error) {
         return toolResult({ ...toToolError(error) });
       }
