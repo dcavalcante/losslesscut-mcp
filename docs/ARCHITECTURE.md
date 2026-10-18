@@ -6,7 +6,7 @@ LosslessCut MCP orchestrates native `.llc` projects and LosslessCut exports for 
 
 ## Integration decision
 
-Use a TypeScript stdio MCP server, official MCP SDK, Zod schemas, a narrow loopback HTTP adapter, `.llc` v2 validation, and FFprobe verification. The product server attaches to an explicitly configured running LosslessCut API. The native acceptance harness separately launches and owns isolated application instances. This split proves the integration while avoiding an unproven production process manager or silently attaching to an arbitrary GUI session.
+Use a TypeScript stdio MCP server, official MCP SDK, Zod schemas, a narrow loopback HTTP adapter, `.llc` v2 validation, and FFprobe verification. The supported export mode has the product server own a dedicated LosslessCut process with its own config, user-data directory, and API port. Shared GUI/API attachment is unsupported for exports because independent clients can race the app's shared state and events. The native acceptance harness verifies the process owner and uses disposable isolated instances.
 
 The upstream API is experimental and has no authentication. It binds to loopback and current source checks both `Host` and `Origin`, but local processes remain trusted. `losslesscut_api_status` probes the guard; the server disables mutation unless both hostile Host and browser Origin requests are rejected. The hostile Host probe uses raw Node HTTP because Fetch normalizes Host to the URL host. Never expose the endpoint to a LAN or shared multi-user host.
 
@@ -27,7 +27,7 @@ The app exposes no loaded-project, busy, or segment-state query. The HTTP action
 - `src/config.ts`: explicit loopback port, authorized roots, timeouts, and FFprobe path.
 - `tests/integration/acceptance.mjs`: Linux-only application lifecycle and real MCP client integration.
 
-Writes require explicit authorized roots and an empty output directory. No silent overwrite or blind retry. Operation serialization is process-local; a second MCP process or user interacting with the GUI can still race the application. The product does not yet own or lock the GUI process.
+Writes require explicit authorized roots and an empty output directory. No silent overwrite or blind retry. Operation serialization and uncertain-session quarantine are process-local; the experiment showed a second MCP server can issue a competing action through the same API. The private owner reduces accidental overlap but cannot authenticate or exclude other local API clients.
 
 ## Alternatives
 

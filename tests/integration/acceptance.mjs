@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
 import { createServer } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,13 +27,24 @@ const firstOutputDir = join(workspace, 'output-success');
 const secondOutputDir = join(workspace, 'output-confirmation');
 const staleOutputDir = join(workspace, 'output-stale');
 const crashOutputDir = join(workspace, 'output-crash');
+const crossOutputOneDir = join(workspace, 'output-cross-one');
+const crossOutputTwoDir = join(workspace, 'output-cross-two');
+const privateOutputOneDir = join(workspace, 'output-private-one');
+const privateOutputTwoDir = join(workspace, 'output-private-two');
 const configDir = join(workspace, 'config-owned');
 const ordinaryConfigDir = join(workspace, 'config-ordinary');
 const confirmationConfigDir = join(workspace, 'config-confirmation');
 const crashConfigDir = join(workspace, 'config-crash');
+const crossConfigDir = join(workspace, 'config-cross-app');
+const crossClientConfigDir = join(workspace, 'config-cross-client');
+const privateConfigOneDir = join(workspace, 'config-private-one');
+const privateConfigTwoDir = join(workspace, 'config-private-two');
 const userDataDir = join(workspace, 'userdata');
 const secondUserDataDir = join(workspace, 'userdata-confirmation');
 const crashUserDataDir = join(workspace, 'userdata-crash');
+const crossUserDataDir = join(workspace, 'userdata-cross');
+const privateUserDataOneDir = join(workspace, 'userdata-private-one');
+const privateUserDataTwoDir = join(workspace, 'userdata-private-two');
 const ordinaryHomeDir = join(workspace, 'ordinary-home');
 const ordinaryOutputDir = join(workspace, 'output-ordinary');
 const logsDir = join(workspace, 'logs');
@@ -43,19 +55,31 @@ await Promise.all(
     secondOutputDir,
     staleOutputDir,
     crashOutputDir,
+    crossOutputOneDir,
+    crossOutputTwoDir,
+    privateOutputOneDir,
+    privateOutputTwoDir,
     configDir,
     ordinaryConfigDir,
     confirmationConfigDir,
     crashConfigDir,
+    crossConfigDir,
+    crossClientConfigDir,
+    privateConfigOneDir,
+    privateConfigTwoDir,
     userDataDir,
     secondUserDataDir,
     crashUserDataDir,
+    crossUserDataDir,
+    privateUserDataOneDir,
+    privateUserDataTwoDir,
     ordinaryHomeDir,
     ordinaryOutputDir,
     logsDir,
   ].map(dir => mkdir(dir, { recursive: true })),
 );
 const mediaPath = join(inputDir, 'fixture.mp4');
+const crossMediaPath = join(inputDir, 'fixture-cross.mp4');
 let projectPath;
 async function availablePort() {
   const server = createServer();
@@ -240,6 +264,20 @@ async function assertMedia(filePath) {
   await execFile(process.env['FFMPEG_PATH'] || 'ffmpeg', ['-v', 'error', '-i', filePath, '-f', 'null', '-'], { timeout: 10_000, maxBuffer: 1_000_000 });
 }
 
+async function firstFrameHash(filePath, seconds = '0') {
+  const { stdout } = await execFile(
+    process.env['FFMPEG_PATH'] || 'ffmpeg',
+    ['-v', 'error', '-ss', seconds, '-i', filePath, '-map', '0:v:0', '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', 'pipe:1'],
+    {
+      encoding: 'buffer',
+      timeout: 10_000,
+      maxBuffer: 1_000_000,
+    },
+  );
+  assert.ok(Buffer.isBuffer(stdout) && stdout.length > 0, `No decoded video frame from ${filePath}`);
+  return createHash('sha256').update(stdout).digest('hex');
+}
+
 function nativeAction(port, action, body) {
   return new Promise((resolvePromise, reject) => {
     const serialized = body === undefined ? undefined : JSON.stringify(body);
@@ -283,9 +321,18 @@ let ownedLifecycle;
 let ordinaryApp;
 let confirmationApp;
 let crashApp;
+let sharedApiApp;
+let privateAppOne;
+let privateAppTwo;
+let privateOwnerOne;
+let privateOwnerTwo;
 let mcp;
 let confirmationMcp;
 let crashMcp;
+let sharedMcpOne;
+let sharedMcpTwo;
+let privateMcpOne;
+let privateMcpTwo;
 let firstExitCode;
 let secondExitCode;
 let firstAppPid;
@@ -304,6 +351,8 @@ let occupiedPortProbe;
 let isolationProbe;
 let crashProbe;
 let staleOutputProbe;
+let crossProcessProbe;
+let privatePairProbe;
 try {
   await execFile(
     process.env['FFMPEG_PATH'] || 'ffmpeg',
@@ -343,6 +392,43 @@ try {
     { timeout: 30_000 },
   );
   const sourceHashes = await execFile('sha256sum', [mediaPath]);
+  await execFile(
+    process.env['FFMPEG_PATH'] || 'ffmpeg',
+    [
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      'color=c=blue:s=160x90:r=25:d=12',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=880:duration=12',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-pix_fmt',
+      'yuv420p',
+      '-g',
+      '25',
+      '-keyint_min',
+      '25',
+      '-sc_threshold',
+      '0',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '96k',
+      '-movflags',
+      '+faststart',
+      crossMediaPath,
+    ],
+    { timeout: 30_000 },
+  );
+  const crossSourceHash = await execFile('sha256sum', [crossMediaPath]);
 
   // Hold an unrelated loopback service on a port, then launch only a disposable
   // LosslessCut child against it. The harness must never kill the listener.
@@ -485,6 +571,22 @@ try {
   assert.equal(generatedInspection.structuredContent.status, 'verified', JSON.stringify(generatedInspection.structuredContent));
   assert.equal(generatedInspection.structuredContent.segmentCount, 2);
   assert.equal(generatedInspection.structuredContent.segments.filter(segment => segment.selected).length, 2);
+  const crossCreated = await mcp.client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath: crossMediaPath,
+      destinationPath: join(inputDir, 'mcp-created-cross.llc'),
+      segments: [
+        { start: 2, end: 4, name: 'cross-blue-a' },
+        { start: 8, end: 10, name: 'cross-blue-b' },
+      ],
+    },
+  });
+  assert.equal(crossCreated.structuredContent.status, 'created', JSON.stringify(crossCreated.structuredContent));
+  const crossProjectPath = crossCreated.structuredContent.projectPath;
+  const crossProjectInspection = await mcp.client.callTool({ name: 'losslesscut_inspect_project', arguments: { projectPath: crossProjectPath } });
+  assert.equal(crossProjectInspection.structuredContent.status, 'verified', JSON.stringify(crossProjectInspection.structuredContent));
+  assert.equal(crossProjectInspection.structuredContent.mediaPath, crossMediaPath);
 
   const [firstDuplicatePair, secondDuplicatePair] = await Promise.all([
     mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: firstOutputDir } }),
@@ -542,6 +644,113 @@ try {
     mcpCandidate: { pid: app.pid, port: ownedPort, configDir: app.configDirectory, userDataDir: app.userDataDirectory, outputDirectory: firstOutputDir, outputs: exported.structuredContent.outputs },
     bothApisReadyAfterNativeExports: { ordinary: ordinaryRootStillReady, mcpCandidate: ownedRootStillReady },
   };
+
+  // Cross-process boundary probe: two unrelated MCP servers share one native
+  // API but use distinguishable media/projects and different expected output
+  // directories. The app itself is configured for crossOutputOneDir only.
+  const sharedPort = await availablePort();
+  sharedApiApp = await startLosslessCut({
+    port: sharedPort,
+    outputDirectory: crossOutputOneDir,
+    configDirectory: crossConfigDir,
+    userDir: crossUserDataDir,
+    exportConfirmEnabled: false,
+    label: 'shared-api-cross-process',
+  });
+  const sharedSettings = JSON.parse(await readFile(join(crossConfigDir, 'config.json'), 'utf8'));
+  sharedSettings.recentCustomOutDirs = [crossOutputTwoDir];
+  await writeFile(join(crossClientConfigDir, 'config.json'), `${JSON.stringify(sharedSettings, null, 2)}\n`);
+  sharedMcpOne = mcpClient(sharedPort, 30_000, crossConfigDir);
+  sharedMcpTwo = mcpClient(sharedPort, 30_000, crossClientConfigDir);
+  await Promise.all([sharedMcpOne.connect(), sharedMcpTwo.connect()]);
+  const sharedStartEvent = nativeAwaitEvent(sharedPort, 'export-start').catch(error => ({ observationError: error instanceof Error ? error.message : String(error) }));
+  const sharedCompleteEvent = nativeAwaitEvent(sharedPort, 'export-complete').catch(error => ({ observationError: error instanceof Error ? error.message : String(error) }));
+  const sharedCalls = await Promise.all([
+    sharedMcpOne.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: crossOutputOneDir } }),
+    sharedMcpTwo.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath: crossProjectPath, outputDirectory: crossOutputTwoDir } }),
+  ]);
+  const [sharedStarted, sharedCompleted] = await Promise.all([sharedStartEvent, sharedCompleteEvent]);
+  const sharedOutputsOne = await readdir(crossOutputOneDir);
+  const sharedOutputsTwo = await readdir(crossOutputTwoDir);
+  const sharedOutputEvidence = [];
+  for (const [directory, names] of [
+    [crossOutputOneDir, sharedOutputsOne],
+    [crossOutputTwoDir, sharedOutputsTwo],
+  ]) {
+    for (const name of names) {
+      const path = join(directory, name);
+      if (!name.toLowerCase().endsWith('.mp4')) continue;
+      let mediaVerification;
+      let frameHash;
+      try {
+        await assertMedia(path);
+        mediaVerification = 'verified';
+        frameHash = await firstFrameHash(path);
+      } catch (error) {
+        mediaVerification = error instanceof Error ? error.message : String(error);
+      }
+      sharedOutputEvidence.push({ path, name, mediaVerification, frameHash, sizeBytes: (await stat(path)).size });
+    }
+  }
+  const expectedSourceFrameHashes = {
+    sourceOne: [await firstFrameHash(mediaPath, '1'), await firstFrameHash(mediaPath, '5')],
+    sourceTwo: [await firstFrameHash(crossMediaPath, '2'), await firstFrameHash(crossMediaPath, '8')],
+  };
+  for (const [index, result] of sharedCalls.entries()) {
+    if (result.structuredContent.status !== 'verified') continue;
+    const expectedProjectPath = index === 0 ? projectPath : crossProjectPath;
+    const expectedMediaPath = index === 0 ? mediaPath : crossMediaPath;
+    const expectedDirectory = index === 0 ? crossOutputOneDir : crossOutputTwoDir;
+    assert.equal(result.structuredContent.projectPath, expectedProjectPath);
+    assert.equal(result.structuredContent.mediaPath, expectedMediaPath);
+    assert.equal(result.structuredContent.outputDirectory, expectedDirectory);
+    assert.ok(result.structuredContent.outputs.length === 2);
+    for (const [outputIndex, output] of result.structuredContent.outputs.entries()) {
+      assert.ok(output.path.startsWith(`${expectedDirectory}/`), `Verified output escaped its requested directory: ${output.path}`);
+      const frameHash = await firstFrameHash(output.path);
+      const expectedFrame = index === 0 ? expectedSourceFrameHashes.sourceOne[outputIndex] : expectedSourceFrameHashes.sourceTwo[outputIndex];
+      assert.equal(frameHash, expectedFrame, `Verified output content did not match its project's source media: ${output.path}`);
+    }
+  }
+  const retryFromQuarantinedSharedServer = sharedCalls.find(result => result.structuredContent.status === 'uncertain');
+  let quarantineProbe;
+  if (retryFromQuarantinedSharedServer) {
+    const owner = sharedCalls.indexOf(retryFromQuarantinedSharedServer) === 0 ? sharedMcpOne : sharedMcpTwo;
+    const ownerProject = owner === sharedMcpOne ? projectPath : crossProjectPath;
+    const ownerOutput = owner === sharedMcpOne ? crossOutputOneDir : crossOutputTwoDir;
+    quarantineProbe = (await owner.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath: ownerProject, outputDirectory: ownerOutput } })).structuredContent;
+    assert.equal(quarantineProbe.code, 'export_session_quarantined');
+  }
+  crossProcessProbe = {
+    application: {
+      pid: sharedApiApp.pid,
+      port: sharedPort,
+      configDirectory: sharedApiApp.configDirectory,
+      userDataDirectory: sharedApiApp.userDataDirectory,
+      actualOutputDirectory: crossOutputOneDir,
+    },
+    mcpProcesses: [sharedMcpOne.transport.pid, sharedMcpTwo.transport.pid],
+    projects: [
+      { projectPath, mediaPath },
+      { projectPath: crossProjectPath, mediaPath: crossMediaPath },
+    ],
+    requestedOutputDirectories: [crossOutputOneDir, crossOutputTwoDir],
+    nativeEvents: { start: sharedStarted, complete: sharedCompleted },
+    mcpResults: sharedCalls.map(result => result.structuredContent),
+    observedFiles: { firstDirectory: sharedOutputsOne, secondDirectory: sharedOutputsTwo, verifiedMedia: sharedOutputEvidence },
+    expectedSourceFrameHashes,
+    quarantineProbe,
+    inputHashesUnchanged: (await execFile('sha256sum', [mediaPath])).stdout === sourceHashes.stdout && (await execFile('sha256sum', [crossMediaPath])).stdout === crossSourceHash.stdout,
+  };
+
+  await sharedMcpOne.client.close();
+  await sharedMcpTwo.client.close();
+  await Promise.all([sharedMcpOne.transport.close(), sharedMcpTwo.transport.close()]);
+  sharedMcpOne = undefined;
+  sharedMcpTwo = undefined;
+  await stopOwnedProcess(sharedApiApp);
+  sharedApiApp = undefined;
+
   await ordinaryMcp.client.close();
   await ordinaryMcp.transport.close();
   await mcp.client.close();
@@ -551,6 +760,85 @@ try {
   firstExitCode = await ownedLifecycle.stop();
   ownedLifecycle = undefined;
   app = undefined;
+
+  // Two concurrently running product-owned private profiles should keep
+  // distinguishable native exports and MCP calls on their respective APIs.
+  const privatePortOne = await availablePort();
+  privateOwnerOne = await LosslessCutProcess.start({
+    executable,
+    port: privatePortOne,
+    configDir: privateConfigOneDir,
+    userDataDir: privateUserDataOneDir,
+    startupTimeoutMs: 30_000,
+    cwd: workspace,
+    stdoutPath: join(logsDir, 'losslesscut-private-one.log'),
+    stderrPath: join(logsDir, 'losslesscut-private-one.stderr.log'),
+    settings: { ...candidateSettings, recentCustomOutDirs: [privateOutputOneDir] },
+  });
+  privateAppOne = privateOwnerOne.child;
+  const privatePortTwo = await availablePort();
+  privateOwnerTwo = await LosslessCutProcess.start({
+    executable,
+    port: privatePortTwo,
+    configDir: privateConfigTwoDir,
+    userDataDir: privateUserDataTwoDir,
+    startupTimeoutMs: 30_000,
+    cwd: workspace,
+    stdoutPath: join(logsDir, 'losslesscut-private-two.log'),
+    stderrPath: join(logsDir, 'losslesscut-private-two.stderr.log'),
+    settings: { ...candidateSettings, recentCustomOutDirs: [privateOutputTwoDir] },
+  });
+  privateAppTwo = privateOwnerTwo.child;
+  privateMcpOne = mcpClient(privatePortOne, 30_000, privateConfigOneDir);
+  privateMcpTwo = mcpClient(privatePortTwo, 30_000, privateConfigTwoDir);
+  await Promise.all([privateMcpOne.connect(), privateMcpTwo.connect()]);
+  const privateExportOne = await privateMcpOne.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: privateOutputOneDir } });
+  assert.equal(privateExportOne.structuredContent.status, 'verified', JSON.stringify(privateExportOne.structuredContent));
+  for (const [outputIndex, output] of privateExportOne.structuredContent.outputs.entries()) {
+    await assertMedia(output.path);
+    assert.equal(await firstFrameHash(output.path), await firstFrameHash(mediaPath, outputIndex === 0 ? '1' : '5'));
+  }
+  const privateExportTwo = await privateMcpTwo.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath: crossProjectPath, outputDirectory: privateOutputTwoDir } });
+  assert.equal(privateExportTwo.structuredContent.status, 'verified', JSON.stringify(privateExportTwo.structuredContent));
+  for (const [outputIndex, output] of privateExportTwo.structuredContent.outputs.entries()) {
+    await assertMedia(output.path);
+    assert.equal(await firstFrameHash(output.path), await firstFrameHash(crossMediaPath, outputIndex === 0 ? '2' : '8'));
+  }
+  assert.ok((await readdir(privateOutputOneDir)).every(name => !name.includes('cross')));
+  assert.ok((await readdir(privateOutputTwoDir)).every(name => name.includes('cross')));
+  privatePairProbe = {
+    processes: [
+      {
+        appPid: privateAppOne.pid,
+        mcpPid: privateMcpOne.transport.pid,
+        port: privatePortOne,
+        configDir: privateConfigOneDir,
+        userDataDir: privateUserDataOneDir,
+        outputDirectory: privateOutputOneDir,
+        result: privateExportOne.structuredContent,
+      },
+      {
+        appPid: privateAppTwo.pid,
+        mcpPid: privateMcpTwo.transport.pid,
+        port: privatePortTwo,
+        configDir: privateConfigTwoDir,
+        userDataDir: privateUserDataTwoDir,
+        outputDirectory: privateOutputTwoDir,
+        result: privateExportTwo.structuredContent,
+      },
+    ],
+    outputFiles: { first: await readdir(privateOutputOneDir), second: await readdir(privateOutputTwoDir) },
+    inputHashesUnchanged: (await execFile('sha256sum', [mediaPath])).stdout === sourceHashes.stdout && (await execFile('sha256sum', [crossMediaPath])).stdout === crossSourceHash.stdout,
+  };
+  await Promise.all([privateMcpOne.client.close(), privateMcpTwo.client.close()]);
+  await Promise.all([privateMcpOne.transport.close(), privateMcpTwo.transport.close()]);
+  privateMcpOne = undefined;
+  privateMcpTwo = undefined;
+  const privateExits = await Promise.all([privateOwnerOne.stop(), privateOwnerTwo.stop()]);
+  privateAppOne = undefined;
+  privateAppTwo = undefined;
+  privateOwnerOne = undefined;
+  privateOwnerTwo = undefined;
 
   const secondPort = await availablePort();
   confirmationApp = await startLosslessCut({
@@ -621,8 +909,8 @@ try {
 
   const report = {
     status: 'passed',
-    applicationPids: [ordinaryAppPid, firstAppPid, secondAppPid],
-    mcpPids: [mcpPid, confirmationMcpPid],
+    applicationPids: [ordinaryAppPid, firstAppPid, crossProcessProbe?.application.pid, privatePairProbe?.processes[0].appPid, privatePairProbe?.processes[1].appPid, secondAppPid],
+    mcpPids: [mcpPid, crossProcessProbe?.mcpProcesses[0], crossProcessProbe?.mcpProcesses[1], privatePairProbe?.processes[0].mcpPid, privatePairProbe?.processes[1].mcpPid, confirmationMcpPid],
     firstApplicationExit: firstExitCode,
     confirmationApplicationExit: secondExitCode,
     applicationLogs: [ordinaryAppLogPath, firstAppLogPath, secondAppLogPath],
@@ -632,6 +920,9 @@ try {
     staleOutput: staleOutputProbe,
     duplicateExport: duplicateExport.structuredContent,
     crashDuringExport: crashProbe,
+    sharedApiCrossProcess: crossProcessProbe,
+    twoMcpOwnedInstances: privatePairProbe,
+    twoMcpOwnedInstanceExits: privateExits,
     concurrentProfileIsolation: isolationProbe,
     sameProfileSecondLaunch: lifecycleProbe,
     evidenceDirectory: workspace,
@@ -645,11 +936,23 @@ try {
   await writeFile(join(logsDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
 } finally {
-  await Promise.all([ownedLifecycle?.stop() ?? stopOwnedProcess(app), stopOwnedProcess(ordinaryApp), stopOwnedProcess(confirmationApp), stopOwnedProcess(crashApp)]);
+  await Promise.all([
+    ownedLifecycle?.stop() ?? stopOwnedProcess(app),
+    privateOwnerOne?.stop(),
+    privateOwnerTwo?.stop(),
+    stopOwnedProcess(ordinaryApp),
+    stopOwnedProcess(confirmationApp),
+    stopOwnedProcess(crashApp),
+    stopOwnedProcess(sharedApiApp),
+  ]);
   await Promise.all([
     mcp ? mcp.client.close().catch(() => undefined) : Promise.resolve(),
     confirmationMcp ? confirmationMcp.client.close().catch(() => undefined) : Promise.resolve(),
     crashMcp ? crashMcp.client.close().catch(() => undefined) : Promise.resolve(),
+    sharedMcpOne ? sharedMcpOne.client.close().catch(() => undefined) : Promise.resolve(),
+    sharedMcpTwo ? sharedMcpTwo.client.close().catch(() => undefined) : Promise.resolve(),
+    privateMcpOne ? privateMcpOne.client.close().catch(() => undefined) : Promise.resolve(),
+    privateMcpTwo ? privateMcpTwo.client.close().catch(() => undefined) : Promise.resolve(),
   ]);
   if (process.env['LOSSLESSCUT_KEEP_TEST_OUTPUT'] !== '1') await rm(workspace, { recursive: true, force: true });
   else console.log(`Acceptance evidence retained at ${workspace}`);

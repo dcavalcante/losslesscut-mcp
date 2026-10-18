@@ -15,7 +15,7 @@ The MCP feature surface is intentionally small: **six tools total, with one veri
 - `losslesscut_open_project` opens an authorized `.llc` project. The result is explicitly unverified because LosslessCut currently returns HTTP 200 even when renderer actions fail.
 - `losslesscut_export_project` opens a project, exports its selected segments, and verifies newly created outputs with FFprobe. Ambiguous or confirmation-blocked runs return `uncertain`; do not blindly retry them.
 
-Media inspection, LLC inspection and project creation work without a running LosslessCut process. By default, open/export attach to a running instance. To have the MCP own a private instance, set `LOSSLESSCUT_EXECUTABLE`, `LOSSLESSCUT_CONFIG_DIR`, and `LOSSLESSCUT_USER_DATA_DIR` together; the server starts the executable on `LOSSLESSCUT_API_PORT`, waits for API security checks and renderer readiness, and stops only the child it launched when the MCP session closes. The experimental loopback API remains unauthenticated between local processes, so private profile ownership does not establish exclusive access against other local software. The Linux acceptance harness uses disposable profiles and leaves unrelated applications untouched.
+Media inspection, LLC inspection and project creation work without a running LosslessCut process. **The supported export mode is an MCP-owned private LosslessCut instance.** Set `LOSSLESSCUT_EXECUTABLE`, `LOSSLESSCUT_CONFIG_DIR`, and `LOSSLESSCUT_USER_DATA_DIR` together; the server starts the executable on `LOSSLESSCUT_API_PORT`, waits for API security checks and renderer readiness, and stops only the child it launched when the MCP session closes. Attaching to a shared GUI/API session is unsupported for exports: concurrent MCP servers or GUI actions can race its uncorrelated events. The experimental loopback API remains unauthenticated between local processes, so even private profile ownership cannot prevent other local software from calling that API. Keep the API on loopback and use a dedicated profile. The Linux acceptance harness uses disposable profiles and leaves unrelated applications untouched.
 
 ## Quick start
 
@@ -34,13 +34,15 @@ Configure your MCP client to run `node /path/to/losslesscut-mcp/dist/index.js` w
 ```text
 LOSSLESSCUT_API_PORT=8080
 LOSSLESSCUT_ALLOWED_ROOTS=/absolute/path/to/authorized/media
-LOSSLESSCUT_CONFIG_DIR=/absolute/path/to/the/running/LosslessCut/config
+LOSSLESSCUT_EXECUTABLE=/absolute/path/to/losslesscut
+LOSSLESSCUT_CONFIG_DIR=/absolute/path/to/a/dedicated/LosslessCut/config
+LOSSLESSCUT_USER_DATA_DIR=/absolute/path/to/a/dedicated/LosslessCut/user-data
 LOSSLESSCUT_EXPORT_TIMEOUT_MS=120000
 ```
 
-For MCP-owned startup, set `LOSSLESSCUT_EXECUTABLE` and `LOSSLESSCUT_USER_DATA_DIR` as well. Use a dedicated, private config directory and user-data directory; these must not belong to an unrelated LosslessCut session. Startup fails if the API port is occupied, the API security guard is absent, or the renderer readiness marker does not arrive before `LOSSLESSCUT_STARTUP_TIMEOUT_MS` (default 30000). MCP stops the exact child process it started on shutdown. This is tested on the source-built Linux application only; no cross-platform support is claimed.
+Use a dedicated, private config directory and user-data directory; these must not belong to an unrelated LosslessCut session. Startup fails if the API port is occupied, the API security guard is absent, or the renderer readiness marker does not arrive before `LOSSLESSCUT_STARTUP_TIMEOUT_MS` (default 30000). MCP stops the exact child process it started on shutdown. This is tested on the source-built Linux application only; no cross-platform support is claimed.
 
-Start LosslessCut with `--http-api 8080` and the same `--config-dir`. Configure a dedicated LosslessCut profile with overwrite disabled, separate-segment export selected, open confirmation disabled, cleanup-after-export disabled, and the requested empty output directory as its custom output directory. Export is refused unless these settings can be read and checked. Keep the API bound to loopback and use an upstream build that rejects hostile Host and browser Origin headers; the server disables mutations if that guard is not verified. This API has no authentication against other local processes.
+The MCP-owned process receives `--http-api` and `--config-dir` itself. Configure its dedicated profile with overwrite disabled, separate-segment export selected, open confirmation disabled, cleanup-after-export disabled, and the requested empty output directory as its custom output directory. Export is refused unless these settings can be read and checked. Keep the API bound to loopback and use an upstream build that rejects hostile Host and browser Origin headers; the server disables mutations if that guard is not verified. This API has no authentication against other local processes.
 
 To run the real acceptance test on Fedora/Linux:
 
