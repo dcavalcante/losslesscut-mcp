@@ -17,7 +17,8 @@
     "lint": "biome lint .",
     "start": "node dist/index.js",
     "test": "npm run build && node --test tests/unit/*.test.mjs",
-    "test:acceptance": "npm run build && node tests/integration/acceptance.mjs"
+    "test:acceptance": "npm run build && node tests/integration/acceptance.mjs",
+    "test:protocol": "npm run build && node tests/integration/inspection-protocol.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",

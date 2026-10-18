@@ -1,58 +1,87 @@
-# Roadmap
+# Outcome-based roadmap
 
-The smallest demonstrable MVP is already proven: an MCP client opens an authorized LLC v2 project in a real LosslessCut session, exports selected segments separately, and verifies new outputs while preserving input. The shortest path to a usable first release is to harden product startup/session readiness and concurrency, add explicit project and media inspection tools, then document installation and supported-version limits.
+## Current scope, plainly stated
 
-Status: **Done** = acceptance evidence exists; **In progress** = implemented but important acceptance/engineering work remains; **Planned** = not implemented.
+LosslessCut is a broad desktop editing application; this MCP currently has **five registered tools**: API status, read-only media inspection, read-only LLC project inspection, project open (unverified), and selected-segment export (verified). Only export completes a native editing workflow. The MCP does not create or edit projects, control tracks, merge outputs, batch files, or analyze scenes/silence. See [CAPABILITIES.md](CAPABILITIES.md) for the native-vs-automation-vs-MCP inventory.
 
-## M0 — Prove native feasibility (Done)
+Milestone order is by product outcome. A capability with an upstream dependency remains separately scoped; MCP work continues through existing interfaces where safe.
 
-| ID | Priority | Deliverable | Dependencies | Acceptance criteria and validation | Status | Group |
+## M0 — Native feasibility completed
+
+**Outcome:** prove at least one real LosslessCut edit through MCP.
+
+**Status: Done.** On Fedora/Linux, LosslessCut 3.69.0 source build `448348bd` loaded an LLC v2 fixture and exported two selected ranges through a real MCP stdio client. Native events, output paths, streams, durations, decode and unchanged input hashes were checked. Confirmation-enabled export returned an uncertain outcome without a false success claim. Test harness owns and cleans isolated application instances. Details: [FEASIBILITY.md](FEASIBILITY.md).
+
+**Exit evidence:** `tests/integration/acceptance.mjs`; latest retained run `/tmp/losslesscut-mcp-acceptance-zrQFDx`.
+
+## M1 — Capability mapping
+
+**Outcome:** make the gap between LosslessCut’s native feature set and MCP automation explicit, with evidence and dependencies.
+
+**Status: Static inventory complete; action-level mapping and native runtime verification ongoing.** [CAPABILITIES.md](CAPABILITIES.md) maps meaningful feature families from upstream README, usage/project docs, CLI, API, and source/runtime evidence. Each row states native support, external mechanism, MCP status/evidence, blocker, priority, and scoped task dependencies. The initial inventory is complete; individual keyboard/API actions and additional native behaviors still need bounded verification. Unknowns remain UNTESTED; documented UI features are not treated as remotely controllable.
+
+**Exit criteria:** initial static feature-family inventory has all required fields and one of VERIFIED, PARTIAL, BLOCKED, UNSUPPORTED or UNTESTED; cross-links resolve; implementation claims match the tools in `src/mcp/server.ts`. Action-level checks and further native runtime evidence remain ongoing after this inventory exit.
+
+## M2 — Private session and reliability
+
+**Outcome:** make each consequential edit operate on an app session whose lifecycle and outcomes the MCP can bound and identify.
+
+**Status: Planned; initial lifecycle probe recorded.** The harness starts LosslessCut with isolated config and Electron user-data paths; a second launch against that same disposable profile exited without binding another API port. This does not prove exclusive session access: the loopback API is unauthenticated, and the product MCP still attaches to a caller-managed instance. Remaining work includes occupied-port and unrelated-instance cases, failure/forced-cleanup handling, and a safe production launch/ownership boundary. Improve timeout recovery and export failure reporting. See [FEASIBILITY.md](FEASIBILITY.md).
+
+**Exit criteria:** competing user/app sessions cannot silently receive edits; startup or export ambiguity yields a stable actionable result; integration tests cover startup races, app exit, confirmation, late events and owned-process cleanup.
+
+## M3 — Practical editing tools
+
+**Outcome:** let an agent inspect input, prepare a reviewable cut plan, and execute the existing native export safely.
+
+**Status: In progress.** T3 media inspection and T4 LLC inspection are implemented and protocol-tested; they have no T1/T2 dependency. Next author/update LLC projects and exercise separate, merged, and selected output modes only when settings and results can be verified.
+
+**Exit criteria:** a real MCP workflow inspects source media and project ranges, creates or revises a reviewable project without mutating source files, and exports only after explicit request; independent FFprobe checks and no-overwrite tests pass.
+
+## M4 — Advanced features
+
+**Outcome:** expand only into high-value native features with typed parameters and observable results.
+
+**Status: Planned.** Candidates include stream/track selection, remux/container choice, chapter/EDL conversion, subtitles, snapshots/frame extraction, and scene/silence suggestions. Native feature presence alone is not acceptance. Each candidate must identify an automation path, maintain clear boundaries between LosslessCut edits and external analysis, and pass a disposable-fixture acceptance test before its status changes.
+
+**Exit criteria:** each shipped advanced capability has isolated evidence, output validation, failure coverage, and an updated matrix row. Do not bundle unrelated feature families into a broad dispatcher.
+
+## M5 — Portability and distribution
+
+**Outcome:** support additional platforms and deliver a usable install/release experience without overstating coverage.
+
+**Status: Planned.** Linux is the only platform validated here. Verify packaged Linux builds and then Windows/macOS process lifecycle, loopback security, app-data isolation, FFprobe availability, clean shutdown, and native export. Add installation/client examples and release packaging only for verified combinations.
+
+**Exit criteria:** a clean installation follows README end-to-end; CI covers deterministic quality checks; each advertised OS/app package has recorded native acceptance or remains explicitly unsupported.
+
+## Ranked next tasks
+
+Ranks combine user value, implementation feasibility and risk. Dependencies are task IDs below. These are small evidence-led slices; the first items do not require upstream changes.
+
+| Rank / ID | Task and outcome | User value | Feasibility | Risk | Dependencies | Acceptance criteria |
 | --- | --- | --- | --- | --- | --- | --- |
-| M0-1 | P0 | Pin source-built app/version and verify loopback API guard | None | Record revision/version; normal root returns expected response; hostile Host and Origin both receive 403 using actual HTTP requests. | Done | Feasibility |
-| M0-2 | P0 | Execute native selected-range export | M0-1 | Generate disposable audio/video MP4 and LLC v2 project; call LosslessCut through real HTTP API; observe native events; FFprobe/decode all outputs; verify input hashes unchanged. | Done | Feasibility |
-| M0-3 | P0 | Test ambiguous confirmation and app lifecycle | M0-1 | With confirmation enabled, bounded wait reports uncertain and no false success; harness captures logs/PID and terminates only owned process. | Done | Feasibility |
-| M0-4 | P0 | Record architecture and integration limits | M0-1–3 | Architecture decision distinguishes native editing from FFprobe verification and documents unverified state, keyframe, event, and security behavior. | Done | Docs |
+| 1 / T1 | Probe private LosslessCut session lifecycle and choose a safe product mode | High | Medium | High | M0 | A disposable real app can be identified as MCP-owned or rejected as unrelated; test occupied port, existing GUI instance, startup failure, renderer readiness, normal shutdown and forced cleanup; never kill an unowned PID. Record exact ownership boundary before expanding mutations. |
+| 2 / T2 | Exercise and document export recovery cases | High | High | Medium | M0 | Acceptance covers app exit during export, confirmation timeout, late completion, stale file, malformed/failed event and duplicate request. Results never trigger blind retry or false verified success; report includes captured logs and output inventory. |
+| 3 / T3 | Add read-only media inspection tool | High | High | Low | M0 | **Done:** official MCP client/server request-response over linked transport returns FFprobe format, duration, streams/codecs; rejects unauthorized, missing and malformed media; verifies inputs unchanged and labels media facts separately from editor state. |
+| 4 / T4 | Add read-only LLC project inspection tool | High | High | Low | M0 | **Done:** official MCP client/server request-response over linked transport inspects v1/v2, markers, selection and tags; rejects malformed ranges and escaped media references; verifies no input changes. |
+| 5 / T5 | Create a reviewable LLC v2 cut project | High | Medium | Medium | T1, T3, T4 | MCP creates a new project from authorized media and validated ranges in an authorized destination; refuses overwrite, validates resulting LLC in LosslessCut, preserves source, then native export reproduces the planned ranges. |
+| 6 / T6 | Update selected ranges and persist a project revision | High | Medium | High | T1, T4, T5 | Explicitly named output project is created without modifying original; unrelated metadata is preserved; external revision/collision check is tested; LosslessCut reopen confirms resulting selected ranges and export fixture matches. |
+| 7 / T7 | Add a basic verified seek/preview control, or keep it out | Medium | Medium | Medium | T1 | Real API action is sent through a narrow typed tool; result is observable through an accepted readback/GUI evidence path. If not, matrix stays PARTIAL and no seek tool is released as successful. |
+| 8 / T8 | Test merged export and output ordering | Medium | Medium | Medium | T1, T2, T5 | Disposable fixture exports selected segments in known order to one merged output; FFprobe/decode checks duration, streams and order markers; unsupported stream combinations fail clearly; separate mode remains unchanged. |
+| 9 / T9 | Verify stream selection, remux and chapter/EDL behavior | Medium | Low-medium | Medium | T1, T2, T5 | Choose one narrow high-value case; test actual LLC/config representation, native reopen, resulting stream/metadata properties and negative cases. Update only that family’s status from UNTESTED when evidence exists. |
+| 10 / T10 | Validate packaged Linux, then one additional platform | Medium | Medium | High | T1, T2 | App package launches with isolation and API guard, performs native acceptance, records exact app/runtime versions and cleans owned processes; unsupported packages/platforms remain unadvertised. |
 
-## M1 — Working MCP vertical slice (In progress)
+Recommended immediate sequence: **T3/T4 (complete, independent) → T1/T2 reliability → T5 → T6/T8 → T9 → T10**. T3 and T4 do not depend on T1 or T2. Keep native GUI acceptance serialized and do not run competing application workflows concurrently.
 
-| ID | Priority | Deliverable | Dependencies | Exit criteria / validation | Status | Group |
-| --- | --- | --- | --- | --- | --- | --- |
-| M1-1 | P0 | Stable typed MCP tools and error outcomes | M0 | Official MCP client lists and calls status/open/export tools over stdio; structured outputs distinguish verified, unverified, known failure, and uncertain. Unit plus native acceptance. | Done | Core |
-| M1-2 | P0 | Harden API readiness and session safety | M0 | Product can establish renderer-ready state or clearly refuse workflow; prevent concurrent/conflicting MCP sessions and fail closed on external changes or unresolved session ownership. Native tests include startup race and competing app/client. | Planned | Integration |
-| M1-3 | P0 | Add standalone authorized media/project inspection | M1-1 | Typed read-only tools report source streams/duration and validated LLC selected ranges; tests include path denial, malformed project, missing media, and no mutations. | Planned | Tools |
-| M1-4 | P1 | Reconcile ambiguous export outcomes | M1-1 | Timeout recovery inventories output names/hashes without retrying; user receives clear actionable states; test timeout, late event, stale output, and app crash cases. | Planned | Safety |
+## Separate upstream opportunities
 
-## M2 — Core editing workflows (Planned)
+These are not MCP milestones and do not block all project work. Investigate or submit narrowly scoped upstream proposals only with reproducible cases and maintainer review:
 
-| ID | Priority | Deliverable | Dependencies | Exit criteria / validation | Status | Group |
-| --- | --- | --- | --- | --- | --- | --- |
-| M2-1 | P1 | Reviewable project creation and segment updates | M1-3 | Create validated LLC v2 from authorized input and selected ranges; round-trip in LosslessCut; preserve unrelated project metadata; no source overwrite. Native acceptance. | Planned | Projects |
-| M2-2 | P1 | Export mode and stream/container options | M1-2, M1-4 | Offer only settings exposed by supported app configuration; test selected streams, output container, names, collisions, metadata, chapters, subtitles. | Planned | Export |
-| M2-3 | P1 | Version compatibility policy | M1-2 | Record tested app versions/builds; reject unknown/incompatible response behavior; CI covers pure adapter contracts and dedicated manual/native acceptance covers app compatibility. | Planned | Compatibility |
+| Upstream opportunity | Evidence / value | Relationship to MCP work |
+| --- | --- | --- |
+| Renderer readiness status or explicit ready event | HTTP root responds before renderer is ready; initial API open timed out. A status signal would remove log-marker-based readiness in the harness and enable safer app ownership. | Helps T1; T3/T4 and project-file work can proceed independently. |
+| Propagate renderer action failures to HTTP response | Invalid action returned HTTP 200 with empty body; source catches action errors. | Improves T1/T2 and direct open/seek diagnosis; current export still uses events and file validation. |
+| Export operation IDs, listener-registration acknowledgement and structured failure details | Current events are uncorrelated and await-event provides no subscription-ready response. | Would strengthen T2 and concurrent recovery; maintain serial operations and conservative uncertainty without it. |
+| Stable typed project/editor-state inspection and mutation API | Current generic keyboard-action route has no state readback and action contracts can change. | Would help T4–T7, but LLC file inspection/authoring and read-only tools should not wait for acceptance. |
 
-## M3 — Useful agent workflows (Planned)
-
-| ID | Priority | Deliverable | Dependencies | Exit criteria / validation | Status | Group |
-| --- | --- | --- | --- | --- | --- | --- |
-| M3-1 | P2 | Approval-oriented cut workflow | M2-1, M2-2 | Agent prepares a project and concise preview summary; user can review before export; acceptance covers cancel, revise, and approve. | Planned | Workflow |
-| M3-2 | P2 | Serial batch workflow, if user value is demonstrated | M1-4, M2-3 | Multiple files run sequentially with per-file status and safe recovery; interruption does not duplicate exports. Benchmark fixture suite. | Planned | Workflow |
-| M3-3 | P2 | Optional media analysis suggestions | M2-1 | Silence/scene suggestions are clearly labeled analysis; ranges enter a reviewable LLC project and are never silently exported. Accuracy and false-positive evaluation. | Planned | Analysis |
-
-## M4 — Release readiness (Planned)
-
-| ID | Priority | Deliverable | Dependencies | Exit criteria / validation | Status | Group |
-| --- | --- | --- | --- | --- | --- | --- |
-| M4-1 | P1 | Installation and security guidance | M1 | Fresh Linux environment can install, configure an authorized root and guarded app, connect MCP client, and run a sample workflow from README. | Planned | Release |
-| M4-2 | P2 | Cross-platform and packaging verification | M2-3 | Windows and macOS each launch isolated app, pass API security/readiness, export, verify, and clean up; otherwise platforms remain explicitly unsupported. | Planned | Release |
-| M4-3 | P1 | CI and release artifacts | M1 | CI installs pinned Node/npm, formats, lints, typechecks, runs unit tests, checks packaging; native acceptance runs on a documented supported Linux runner or remains an explicit maintainer validation step. | Planned | Release |
-| M4-4 | P2 | Public examples and versioned release | M4-1–3 | Example client workflow and reproducible release notes; no release claim exceeds tested capabilities/platforms. | Planned | Docs |
-
-## Recommended implementation grouping
-
-1. **M1-2**: renderer readiness and session/concurrency design; investigate whether a narrow upstream API improvement is needed.
-2. **M1-3 + M1-4**: read-only inspection and safe export reconciliation; keep these as separate reviewable changes if they touch different modules.
-3. **M2-1**: project authoring after inspection contract stabilizes.
-4. **M2-2 + M2-3**: only after the existing separate-export path has reliable session ownership.
-5. **M3/M4**: prioritize based on demonstrated user workflow demand and actual platform test availability.
-
-No upstream change is a prerequisite for the current narrow acceptance-tested slice. Action result/error propagation, renderer-ready status, and export operation IDs/error details are good narrowly scoped upstream candidates because they address observed limitations; do not block the project on a broad API redesign.
+Track upstream suggestions separately from product work. Do not create a fork or make MCP milestones depend on an upstream merge unless a specific capability is otherwise unsafe or impossible.

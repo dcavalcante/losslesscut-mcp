@@ -109,6 +109,48 @@ async function startLosslessCut({ port, outputDirectory, userDir, exportConfirmE
   return app;
 }
 
+async function probeSameProfileSecondLaunch(primaryPort) {
+  const port = await availablePort();
+  const stdoutPath = join(logsDir, 'losslesscut-same-profile-second.log');
+  const stderrPath = join(logsDir, 'losslesscut-same-profile-second.stderr.log');
+  const stdout = createWriteStream(stdoutPath, { flags: 'a' });
+  const stderr = createWriteStream(stderrPath, { flags: 'a' });
+  const second = spawn(executable, [`--user-data-dir=${userDataDir}`, '--http-api', String(port), '--config-dir', configDir], {
+    cwd: workspace,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  second.stdout.pipe(stdout);
+  second.stderr.pipe(stderr);
+  second.once('exit', () => {
+    stdout.end();
+    stderr.end();
+  });
+
+  const deadline = Date.now() + 8_000;
+  let secondApiResponded = false;
+  while (Date.now() < deadline && second.exitCode == null) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`, { headers: { host: `127.0.0.1:${port}` }, signal: AbortSignal.timeout(250) });
+      secondApiResponded = response.status === 200;
+      if (secondApiResponded) break;
+    } catch {
+      // A refused connection is the expected outcome when the second launch
+      // hands off to the primary process and exits without binding this port.
+    }
+    await new Promise(resolvePromise => setTimeout(resolvePromise, 100));
+  }
+
+  const secondExit = await stopOwnedProcess(second);
+  const primaryStillReady = await fetch(`http://127.0.0.1:${primaryPort}/`, { headers: { host: `127.0.0.1:${primaryPort}` } }).then(
+    response => response.status === 200,
+    () => false,
+  );
+  assert.equal(primaryStillReady, true, 'The primary isolated session must remain ready after a same-profile launch probe.');
+  assert.equal(secondApiResponded, false, 'A duplicate same-profile launch must not create a second API session.');
+  assert.ok(secondExit.exitCode != null || secondExit.signal != null, 'The duplicate probe process must be reaped.');
+  return { secondPid: second.pid, secondExit, secondApiResponded, primaryStillReady, stdoutPath, stderrPath };
+}
+
 async function stopOwnedProcess(child) {
   if (!child || child.exitCode != null || child.signalCode != null) return { exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null };
   const exited = new Promise(resolvePromise => child.once('exit', (exitCode, signal) => resolvePromise({ exitCode, signal })));
@@ -193,6 +235,7 @@ let firstAppLogPath;
 let firstAppErrPath;
 let secondAppLogPath;
 let secondAppErrPath;
+let lifecycleProbe;
 try {
   await execFile(
     process.env['FFMPEG_PATH'] || 'ffmpeg',
@@ -252,6 +295,7 @@ try {
   firstAppPid = app.pid;
   firstAppLogPath = app.logPath;
   firstAppErrPath = app.stderrLogPath;
+  lifecycleProbe = await probeSameProfileSecondLaunch(port);
   mcp = mcpClient(port, 30_000);
   await mcp.connect();
   mcpPid = mcp.transport.pid;
@@ -310,6 +354,8 @@ try {
     confirmationApplicationExit: secondExitCode,
     applicationLogs: [firstAppLogPath, secondAppLogPath],
     stderrLogs: [firstAppErrPath, secondAppErrPath],
+    isolatedProfile: { configDir, userDataDir },
+    sameProfileSecondLaunch: lifecycleProbe,
     evidenceDirectory: workspace,
     exported: exported.structuredContent.outputs,
     actionProbes: {

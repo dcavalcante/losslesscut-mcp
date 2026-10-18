@@ -4,22 +4,27 @@ An MCP server for preparing and exporting precise cuts through LosslessCut's nat
 
 **Current MVP:** open a validated LosslessCut `.llc` v2 project, export its selected segments as separate files, and verify the native export events, output paths, streams, and durations. Verified on Fedora/Linux with the source-built LosslessCut 3.69.0 at revision `448348bd`.
 
+The MCP feature surface is intentionally small: **five tools total, with one verified native editing workflow**. It can inspect media and LLC projects read-only, but it does not create or edit projects, control tracks, merge outputs, process batches, generate snapshots, or run scene/silence analysis. LosslessCut’s broader native feature set and the automation evidence for each family are in the [capability inventory](docs/CAPABILITIES.md).
+
 ## Tools
 
 - `losslesscut_api_status` checks the API root and verifies the upstream Host/Origin guard.
+- `losslesscut_inspect_media` runs FFprobe on an authorized media file and reports container and stream facts; it does not inspect editor state.
+- `losslesscut_inspect_project` reads and validates an authorized LLC v1/v2 project, its segment ranges, and any referenced media path.
 - `losslesscut_open_project` opens an authorized `.llc` project. The result is explicitly unverified because LosslessCut currently returns HTTP 200 even when renderer actions fail.
 - `losslesscut_export_project` opens a project, exports its selected segments, and verifies newly created outputs with FFprobe. Ambiguous or confirmation-blocked runs return `uncertain`; do not blindly retry them.
 
-The server attaches to a LosslessCut process the operator has started. The integration test harness owns its own isolated app instances, configuration, Electron user-data, fixtures, logs, and cleanup. The product server does not yet launch or supervise the desktop app.
+The media and project inspection tools work without a running LosslessCut process. Open/export tools attach to a LosslessCut process the operator has started. The integration test harness owns its own isolated app instances, configuration, Electron user-data, fixtures, logs, and cleanup; the product server does not yet launch or supervise the desktop app.
 
 ## Quick start
 
-Requirements: Node.js 22.23.3, npm 10.9.9, LosslessCut built with `--http-api` support, and FFprobe. Export acceptance additionally uses FFmpeg to generate disposable fixtures.
+Requirements: Node.js 22.23.3, npm 10.9.9, and FFprobe. The MCP protocol inspection test and native export acceptance also use FFmpeg to generate disposable fixtures. Native acceptance requires a Linux LosslessCut build with `--http-api` support.
 
 ```sh
 npm ci
 npm run check
 npm test
+npm run test:protocol
 npm start
 ```
 

@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import type { AppConfig } from '../config.js';
+import { inspectMedia, inspectProject } from '../integration/inspection.js';
 import { LosslessCutApi } from '../integration/losslesscut-api.js';
 import { exportProjectWorkflow, openProjectWorkflow, toToolError } from '../integration/workflows.js';
 
@@ -38,6 +39,62 @@ const exportOutputSchema = z.object({
   eventCorrelation: z.string().optional(),
 });
 
+const inspectionErrorSchema = z.object({
+  status: z.literal('error'),
+  message: z.string(),
+  code: z.string(),
+});
+
+const mediaInspectionOutputSchema = z.union([
+  z.object({
+    status: z.literal('verified'),
+    message: z.string(),
+    path: z.string(),
+    formatName: z.string().optional(),
+    duration: z.number().optional(),
+    sizeBytes: z.number(),
+    bitRate: z.number().optional(),
+    streams: z.array(
+      z.object({
+        index: z.number(),
+        codecType: z.string().optional(),
+        codecName: z.string().optional(),
+        codecLongName: z.string().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        sampleRate: z.string().optional(),
+        channels: z.number().optional(),
+        channelLayout: z.string().optional(),
+      }),
+    ),
+  }),
+  inspectionErrorSchema,
+]);
+
+const projectInspectionOutputSchema = z.union([
+  z.object({
+    status: z.literal('verified'),
+    message: z.string(),
+    projectPath: z.string(),
+    version: z.number(),
+    mediaPath: z.string().optional(),
+    mediaReferencePresent: z.boolean(),
+    segmentCount: z.number(),
+    segments: z.array(
+      z.object({
+        index: z.number(),
+        start: z.number(),
+        end: z.number().optional(),
+        kind: z.enum(['marker', 'segment']),
+        name: z.string(),
+        selected: z.boolean().optional(),
+        tags: z.record(z.string(), z.string()).optional(),
+      }),
+    ),
+  }),
+  inspectionErrorSchema,
+]);
+
 function toolResult<T extends { status: string; message: string }>(result: T) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(result) }],
@@ -61,6 +118,40 @@ export function createMcpServer(config: AppConfig): McpServer {
     async () => {
       const result = await api.status();
       return { content: [{ type: 'text' as const, text: JSON.stringify(result) }], structuredContent: result };
+    },
+  );
+
+  server.registerTool(
+    'losslesscut_inspect_media',
+    {
+      title: 'Inspect media file',
+      description: 'Read-only FFprobe inspection of a media file inside LOSSLESSCUT_ALLOWED_ROOTS. Reports container and stream facts; it does not open or alter LosslessCut editor state.',
+      inputSchema: z.object({ path: z.string().min(1).describe('Media file path inside an authorized root.') }),
+      outputSchema: mediaInspectionOutputSchema,
+    },
+    async ({ path }) => {
+      try {
+        return toolResult(await inspectMedia(config, path));
+      } catch (error) {
+        return toolResult({ ...toToolError(error) });
+      }
+    },
+  );
+
+  server.registerTool(
+    'losslesscut_inspect_project',
+    {
+      title: 'Inspect LosslessCut project',
+      description: 'Read-only inspection of authorized LosslessCut .llc v1/v2 files. Validates segment times and confines referenced media to authorized roots; does not open or modify the project.',
+      inputSchema: z.object({ projectPath: z.string().min(1).describe('LLC project path inside an authorized root.') }),
+      outputSchema: projectInspectionOutputSchema,
+    },
+    async ({ projectPath }) => {
+      try {
+        return toolResult(await inspectProject(config, projectPath));
+      } catch (error) {
+        return toolResult({ ...toToolError(error) });
+      }
     },
   );
 
