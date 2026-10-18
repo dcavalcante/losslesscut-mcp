@@ -50,9 +50,9 @@ Milestone order is by product outcome. A capability with an upstream dependency 
 
 **Outcome:** support additional platforms and deliver a usable install/release experience without overstating coverage.
 
-**Status: Planned.** Linux is the only platform validated here. Verify packaged Linux builds and then Windows/macOS process lifecycle, loopback security, app-data isolation, FFprobe availability, clean shutdown, and native export. Add installation/client examples and release packaging only for verified combinations.
+**Status: Linux MVP release candidate prepared.** A fresh Linux checkout followed the README through dependency installation, build, quality checks, protocol tests, package dry-run, and a real MCP-client demonstration with an MCP-owned source-built LosslessCut process. Proposed v0.1.0 notes are in [RELEASE_NOTES.md](RELEASE_NOTES.md); no tag or publication exists. Packaged LosslessCut builds and Windows/macOS process lifecycle, loopback security, app-data isolation, FFprobe availability, clean shutdown, and native export remain unverified and unsupported.
 
-**Exit criteria:** a clean installation follows README end-to-end; CI covers deterministic quality checks; each advertised OS/app package has recorded native acceptance or remains explicitly unsupported.
+**Exit criteria:** Linux clean installation and native acceptance are recorded; hosted CI passes its deterministic quality checks; each advertised OS/app package has recorded native acceptance. The workflow has passed locally, but its GitHub-hosted run awaits an authorized push or pull request. Additional platforms remain explicitly unsupported until their native acceptance is recorded.
 
 ## Ranked next tasks
 

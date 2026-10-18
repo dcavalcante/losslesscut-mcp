@@ -100,6 +100,14 @@ The project-authoring MCP tool is tested over the official MCP protocol with rea
 - [Renderer actions and events](https://github.com/mifi/lossless-cut/blob/master/src/renderer/src/App.tsx)
 - [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)
 
+## Release-readiness verification (Scope 6)
+
+The clean-install and release demonstration were run from a fresh clone at `/tmp/losslesscut-mcp-scope6.ku8djB/repo`, using Node.js 22.23.3 and npm 10.9.9. `npm ci`, toolchain check, build/typecheck, formatting, lint, unit tests, MCP protocol tests, and `npm pack --dry-run` completed successfully. The pack dry-run used a cache under `/tmp` and contained the executable entry point, compiled distribution, README, license, and docs. Biome reports informational `useLiteralKeys` diagnostics; lint exits successfully. The capability inventory contains 35 feature-family rows; it continues to distinguish native support from the six MCP tools and their evidence.
+
+The proposed README setup was then exercised through a real MCP stdio client and the official MCP SDK against source-built LosslessCut 3.69.0 (`448348bd`) on Fedora/Linux. The new `mcpOwnedPrivateDemo` scenario in the acceptance report is `/tmp/losslesscut-mcp-acceptance-UyC82m/logs/report.json`. MCP inspected a generated 12-second H.264/AAC source, created and inspected an LLC v2 project with selected `[1,3]` and `[5,7]` ranges, started its own private LosslessCut instance, exported two MP4 clips, and independently checked streams and duration with FFprobe. Both output clips had H.264/AAC and 2.026667-second container duration. Source SHA-256 was identical before and after (`ba80e31f04f89c1a21702f21ab5fd23cddbfc48fa616220a1fae64a39999674f`). Closing the MCP transport shut down its owned app; the API port became unavailable, and no LosslessCut child remained.
+
+The acceptance suite is intentionally separate from hosted CI because the latter does not provide a dependable LosslessCut desktop session. The workflow runs typecheck, format, lint, unit, and real MCP protocol tests with FFmpeg/FFprobe installed. Those workflow commands passed locally from the clean checkout, but the GitHub-hosted job itself has not run for this release candidate because no push or pull request was made. This is the remaining CI evidence gap, not a native integration failure.
+
 ## Open risks
 
 1. A user or second MCP server can change the attached GUI session while the workflow runs; there is no upstream session lock, state query, or operation ID.

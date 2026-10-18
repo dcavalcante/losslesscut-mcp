@@ -14,8 +14,15 @@ jobs:
           node-version-file: .node-version
       - run: npm install --global npm@10.9.9
       - run: npm run check:toolchain
+      - name: Install FFmpeg and FFprobe for protocol fixtures
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm run format:check
       - run: npm run lint
-      - run: npm run check
+      - name: Type check
+        run: npm run typecheck
       - run: npm test
+      - name: MCP protocol tests
+        run: npm run test:protocol

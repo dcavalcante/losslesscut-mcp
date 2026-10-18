@@ -19,30 +19,67 @@ Media inspection, LLC inspection and project creation work without a running Los
 
 ## Quick start
 
-Requirements: Node.js 22.23.3, npm 10.9.9, and FFprobe. The MCP protocol inspection test and native export acceptance also use FFmpeg to generate disposable fixtures. Native acceptance requires a Linux LosslessCut build with `--http-api` support.
+Requirements: Linux, Node.js 22.23.3, npm 10.9.9, FFmpeg and FFprobe. Native acceptance additionally requires the source-built LosslessCut executable with `--http-api` support; CI runs the deterministic protocol suite but does not attempt GUI acceptance.
 
 ```sh
 npm ci
-npm run check
+npm run check:toolchain
+npm run build
+npm run typecheck
+npm run format:check
+npm run lint
 npm test
 npm run test:protocol
-npm start
 ```
 
-Configure your MCP client to run `node /path/to/losslesscut-mcp/dist/index.js` with:
+Before starting the MCP server, prepare a dedicated LosslessCut config and user-data directory and an existing output directory. Seed `config.json` so the private profile has the safe export settings the MCP checks:
 
-```text
-LOSSLESSCUT_API_PORT=8080
-LOSSLESSCUT_ALLOWED_ROOTS=/absolute/path/to/authorized/media
-LOSSLESSCUT_EXECUTABLE=/absolute/path/to/losslesscut
-LOSSLESSCUT_CONFIG_DIR=/absolute/path/to/a/dedicated/LosslessCut/config
-LOSSLESSCUT_USER_DATA_DIR=/absolute/path/to/a/dedicated/LosslessCut/user-data
-LOSSLESSCUT_EXPORT_TIMEOUT_MS=120000
+```sh
+mkdir -p /home/alex/losslesscut-profile/config /home/alex/losslesscut-profile/user-data
+mkdir -p /home/alex/Videos/exports
+cat > /home/alex/losslesscut-profile/config/config.json <<'JSON'
+{
+  "enableCustomOutDir": true,
+  "recentCustomOutDirs": ["/home/alex/Videos/exports"],
+  "enableOverwriteOutput": false,
+  "autoMerge": false,
+  "invertCutSegments": false,
+  "segmentsToChaptersOnly": false,
+  "enableAskForFileOpenAction": false,
+  "askBeforeClose": true,
+  "storeProjectInWorkingDir": true,
+  "exportConfirmEnabled": false,
+  "cleanupChoices": { "cleanupAfterExport": false }
+}
+JSON
 ```
 
 Use a dedicated, private config directory and user-data directory; these must not belong to an unrelated LosslessCut session. Startup fails if the API port is occupied, the API security guard is absent, or the renderer readiness marker does not arrive before `LOSSLESSCUT_STARTUP_TIMEOUT_MS` (default 30000). MCP stops the exact child process it started on shutdown. This is tested on the source-built Linux application only; no cross-platform support is claimed.
 
-The MCP-owned process receives `--http-api` and `--config-dir` itself. Configure its dedicated profile with overwrite disabled, separate-segment export selected, open confirmation disabled, cleanup-after-export disabled, and the requested empty output directory as its custom output directory. Export is refused unless these settings can be read and checked. Keep the API bound to loopback and use an upstream build that rejects hostile Host and browser Origin headers; the server disables mutations if that guard is not verified. This API has no authentication against other local processes.
+Replace the example paths below with real absolute paths. Configure your MCP client to run the built server. This is a Claude Desktop-style `claude_desktop_config.json` example; other stdio MCP clients use the same command and environment values:
+
+```json
+{
+  "mcpServers": {
+    "losslesscut": {
+      "command": "node",
+      "args": ["/home/alex/src/losslesscut-mcp/dist/index.js"],
+      "env": {
+        "LOSSLESSCUT_API_PORT": "18080",
+        "LOSSLESSCUT_ALLOWED_ROOTS": "/home/alex/Videos",
+        "LOSSLESSCUT_EXECUTABLE": "/home/alex/Applications/losslesscut",
+        "LOSSLESSCUT_CONFIG_DIR": "/home/alex/losslesscut-profile/config",
+        "LOSSLESSCUT_USER_DATA_DIR": "/home/alex/losslesscut-profile/user-data",
+        "LOSSLESSCUT_EXPORT_TIMEOUT_MS": "120000"
+      }
+    }
+  }
+}
+```
+
+The MCP-owned process receives `--http-api` and `--config-dir` itself. The config must select separate-segment export, disable overwrite and open confirmation, leave cleanup-after-export disabled, and name the requested existing empty output directory as its custom output directory. Export is refused unless these settings can be read and checked. Keep the API bound to loopback and use an upstream build that rejects hostile Host and browser Origin headers; the server disables mutations if that guard is not verified. The API is unauthenticated against other local processes. Shared GUI/API exports are unsupported.
+
+After the client starts the server, request the six tools from its tool list. The server process owns LosslessCut for the duration of that MCP connection; closing the client connection triggers shutdown of the exact child it launched.
 
 To run the real acceptance test on Fedora/Linux:
 
@@ -50,7 +87,7 @@ To run the real acceptance test on Fedora/Linux:
 LOSSLESSCUT_EXECUTABLE=/path/to/losslesscut npm run test:acceptance
 ```
 
-The harness starts and terminates only the instances it owns. Set `LOSSLESSCUT_KEEP_TEST_OUTPUT=1` to preserve generated inputs, outputs, and logs. See [architecture](docs/ARCHITECTURE.md), [feasibility evidence](docs/FEASIBILITY.md), [capability matrix](docs/CAPABILITIES.md), and [roadmap](docs/ROADMAP.md).
+The harness starts and terminates only the instances it owns. Set `LOSSLESSCUT_KEEP_TEST_OUTPUT=1` to preserve generated inputs, outputs, and logs. See [architecture](docs/ARCHITECTURE.md), [feasibility evidence](docs/FEASIBILITY.md), [capability matrix](docs/CAPABILITIES.md), and [roadmap](docs/ROADMAP.md). The proposed first release notes are in [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md); no release has been published.
 
 ## License
 

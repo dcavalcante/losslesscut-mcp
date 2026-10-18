@@ -31,6 +31,7 @@ const crossOutputOneDir = join(workspace, 'output-cross-one');
 const crossOutputTwoDir = join(workspace, 'output-cross-two');
 const privateOutputOneDir = join(workspace, 'output-private-one');
 const privateOutputTwoDir = join(workspace, 'output-private-two');
+const mcpOwnedDemoOutputDir = join(workspace, 'output-mcp-owned-demo');
 const configDir = join(workspace, 'config-owned');
 const ordinaryConfigDir = join(workspace, 'config-ordinary');
 const confirmationConfigDir = join(workspace, 'config-confirmation');
@@ -39,12 +40,14 @@ const crossConfigDir = join(workspace, 'config-cross-app');
 const crossClientConfigDir = join(workspace, 'config-cross-client');
 const privateConfigOneDir = join(workspace, 'config-private-one');
 const privateConfigTwoDir = join(workspace, 'config-private-two');
+const mcpOwnedDemoConfigDir = join(workspace, 'config-mcp-owned-demo');
 const userDataDir = join(workspace, 'userdata');
 const secondUserDataDir = join(workspace, 'userdata-confirmation');
 const crashUserDataDir = join(workspace, 'userdata-crash');
 const crossUserDataDir = join(workspace, 'userdata-cross');
 const privateUserDataOneDir = join(workspace, 'userdata-private-one');
 const privateUserDataTwoDir = join(workspace, 'userdata-private-two');
+const mcpOwnedDemoUserDataDir = join(workspace, 'userdata-mcp-owned-demo');
 const ordinaryHomeDir = join(workspace, 'ordinary-home');
 const ordinaryOutputDir = join(workspace, 'output-ordinary');
 const logsDir = join(workspace, 'logs');
@@ -59,6 +62,7 @@ await Promise.all(
     crossOutputTwoDir,
     privateOutputOneDir,
     privateOutputTwoDir,
+    mcpOwnedDemoOutputDir,
     configDir,
     ordinaryConfigDir,
     confirmationConfigDir,
@@ -67,12 +71,14 @@ await Promise.all(
     crossClientConfigDir,
     privateConfigOneDir,
     privateConfigTwoDir,
+    mcpOwnedDemoConfigDir,
     userDataDir,
     secondUserDataDir,
     crashUserDataDir,
     crossUserDataDir,
     privateUserDataOneDir,
     privateUserDataTwoDir,
+    mcpOwnedDemoUserDataDir,
     ordinaryHomeDir,
     ordinaryOutputDir,
     logsDir,
@@ -228,7 +234,7 @@ async function stopOwnedProcess(child) {
   return result;
 }
 
-function mcpClient(port, exportTimeoutMs, appConfigDir = configDir) {
+function mcpClient(port, exportTimeoutMs, appConfigDir = configDir, extraEnv = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(root, 'dist', 'index.js')],
@@ -240,6 +246,7 @@ function mcpClient(port, exportTimeoutMs, appConfigDir = configDir) {
       LOSSLESSCUT_USER_DATA_DIR: '',
       LOSSLESSCUT_ALLOWED_ROOTS: workspace,
       LOSSLESSCUT_EXPORT_TIMEOUT_MS: String(exportTimeoutMs),
+      ...extraEnv,
     },
     stderr: 'pipe',
   });
@@ -333,6 +340,7 @@ let sharedMcpOne;
 let sharedMcpTwo;
 let privateMcpOne;
 let privateMcpTwo;
+let mcpOwnedDemoClient;
 let firstExitCode;
 let secondExitCode;
 let firstAppPid;
@@ -353,6 +361,7 @@ let crashProbe;
 let staleOutputProbe;
 let crossProcessProbe;
 let privatePairProbe;
+let mcpOwnedDemoProbe;
 try {
   await execFile(
     process.env['FFMPEG_PATH'] || 'ffmpeg',
@@ -840,6 +849,101 @@ try {
   privateOwnerOne = undefined;
   privateOwnerTwo = undefined;
 
+  // End-to-end release demonstration: the MCP process itself starts and
+  // stops LosslessCut using only the documented environment and config file.
+  const demoSettings = {
+    enableCustomOutDir: true,
+    recentCustomOutDirs: [mcpOwnedDemoOutputDir],
+    enableOverwriteOutput: false,
+    autoMerge: false,
+    invertCutSegments: false,
+    segmentsToChaptersOnly: false,
+    enableAskForFileOpenAction: false,
+    askBeforeClose: true,
+    storeProjectInWorkingDir: true,
+    exportConfirmEnabled: false,
+    cleanupChoices: { cleanupAfterExport: false },
+  };
+  await writeFile(join(mcpOwnedDemoConfigDir, 'config.json'), `${JSON.stringify(demoSettings, null, 2)}\n`);
+  const demoPort = await availablePort();
+  const demoSourceHash = await execFile('sha256sum', [mediaPath]);
+  mcpOwnedDemoClient = mcpClient(demoPort, 30_000, mcpOwnedDemoConfigDir, {
+    LOSSLESSCUT_API_PORT: String(demoPort),
+    LOSSLESSCUT_EXECUTABLE: executable,
+    LOSSLESSCUT_CONFIG_DIR: mcpOwnedDemoConfigDir,
+    LOSSLESSCUT_USER_DATA_DIR: mcpOwnedDemoUserDataDir,
+  });
+  await mcpOwnedDemoClient.connect();
+  const demoServerPid = mcpOwnedDemoClient.transport.pid;
+  const demoToolList = await mcpOwnedDemoClient.client.listTools();
+  assert.ok(demoToolList.tools.some(tool => tool.name === 'losslesscut_inspect_media'));
+  assert.ok(demoToolList.tools.some(tool => tool.name === 'losslesscut_create_project'));
+  assert.ok(demoToolList.tools.some(tool => tool.name === 'losslesscut_export_project'));
+  const demoMedia = await mcpOwnedDemoClient.client.callTool({ name: 'losslesscut_inspect_media', arguments: { path: mediaPath } });
+  assert.equal(demoMedia.structuredContent.status, 'verified', JSON.stringify(demoMedia.structuredContent));
+  const demoProjectCreate = await mcpOwnedDemoClient.client.callTool({
+    name: 'losslesscut_create_project',
+    arguments: {
+      mediaPath,
+      destinationPath: join(inputDir, 'release-demo.llc'),
+      segments: [
+        { start: 1, end: 3, name: 'demo-clip-one' },
+        { start: 5, end: 7, name: 'demo-clip-two' },
+      ],
+    },
+  });
+  assert.equal(demoProjectCreate.structuredContent.status, 'created', JSON.stringify(demoProjectCreate.structuredContent));
+  const demoProject = await mcpOwnedDemoClient.client.callTool({ name: 'losslesscut_inspect_project', arguments: { projectPath: demoProjectCreate.structuredContent.projectPath } });
+  assert.equal(demoProject.structuredContent.status, 'verified', JSON.stringify(demoProject.structuredContent));
+  const demoExport = await mcpOwnedDemoClient.client.callTool({
+    name: 'losslesscut_export_project',
+    arguments: { projectPath: demoProjectCreate.structuredContent.projectPath, outputDirectory: mcpOwnedDemoOutputDir },
+  });
+  assert.equal(demoExport.structuredContent.status, 'verified', JSON.stringify(demoExport.structuredContent));
+  assert.equal(demoExport.structuredContent.outputs.length, 2);
+  for (const output of demoExport.structuredContent.outputs) await assertMedia(output.path);
+  const demoSourceHashAfter = await execFile('sha256sum', [mediaPath]);
+  assert.equal(demoSourceHashAfter.stdout, demoSourceHash.stdout, 'MCP-owned demo export must leave the source unchanged.');
+  const demoStatus = await mcpOwnedDemoClient.client.callTool({ name: 'losslesscut_api_status', arguments: {} });
+  assert.equal(demoStatus.structuredContent.reachable, true);
+  let transportClosedResolve;
+  const transportClosed = new Promise(resolvePromise => {
+    transportClosedResolve = resolvePromise;
+  });
+  const previousOnClose = mcpOwnedDemoClient.transport.onclose;
+  mcpOwnedDemoClient.transport.onclose = () => {
+    previousOnClose?.();
+    transportClosedResolve();
+  };
+  await mcpOwnedDemoClient.client.close();
+  await mcpOwnedDemoClient.transport.close();
+  let shutdownTimer;
+  await Promise.race([
+    transportClosed,
+    new Promise((_, reject) => {
+      shutdownTimer = setTimeout(() => reject(new Error('MCP-owned demo server did not close after the client disconnected.')), 10_000);
+    }),
+  ]);
+  clearTimeout(shutdownTimer);
+  mcpOwnedDemoClient = undefined;
+  const demoApiDown = await fetch(`http://127.0.0.1:${demoPort}/`, { headers: { host: `127.0.0.1:${demoPort}` }, signal: AbortSignal.timeout(1_000) }).then(
+    () => false,
+    () => true,
+  );
+  assert.equal(demoApiDown, true, 'LosslessCut API must stop after its owning MCP process closes.');
+  mcpOwnedDemoProbe = {
+    mcpServerPid: demoServerPid,
+    apiPort: demoPort,
+    sourcePath: mediaPath,
+    sourceSha256Before: demoSourceHash.stdout.trim().split(' ')[0],
+    sourceSha256After: demoSourceHashAfter.stdout.trim().split(' ')[0],
+    mediaInspection: demoMedia.structuredContent,
+    project: demoProject.structuredContent,
+    export: demoExport.structuredContent,
+    apiUnavailableAfterClientShutdown: demoApiDown,
+    mcpTransportClosed: true,
+  };
+
   const secondPort = await availablePort();
   confirmationApp = await startLosslessCut({
     port: secondPort,
@@ -923,6 +1027,7 @@ try {
     sharedApiCrossProcess: crossProcessProbe,
     twoMcpOwnedInstances: privatePairProbe,
     twoMcpOwnedInstanceExits: privateExits,
+    mcpOwnedPrivateDemo: mcpOwnedDemoProbe,
     concurrentProfileIsolation: isolationProbe,
     sameProfileSecondLaunch: lifecycleProbe,
     evidenceDirectory: workspace,
@@ -953,6 +1058,7 @@ try {
     sharedMcpTwo ? sharedMcpTwo.client.close().catch(() => undefined) : Promise.resolve(),
     privateMcpOne ? privateMcpOne.client.close().catch(() => undefined) : Promise.resolve(),
     privateMcpTwo ? privateMcpTwo.client.close().catch(() => undefined) : Promise.resolve(),
+    mcpOwnedDemoClient ? mcpOwnedDemoClient.client.close().catch(() => undefined) : Promise.resolve(),
   ]);
   if (process.env['LOSSLESSCUT_KEEP_TEST_OUTPUT'] !== '1') await rm(workspace, { recursive: true, force: true });
   else console.log(`Acceptance evidence retained at ${workspace}`);
