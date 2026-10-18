@@ -20,6 +20,12 @@ npm run build
 npm start
 ```
 
+In a separate terminal, start LosslessCut with its local API enabled:
+
+```sh
+losslesscut --http-api
+```
+
 Then add this process as a stdio MCP server in your client. The only implemented tool currently checks `127.0.0.1:8080`; it cannot edit media yet. The server must use stdio for MCP and must never write logs to stdout.
 
 The first release will document the app launch/API configuration explicitly and will not claim Windows or macOS support until tested. Current setup and feature status are tracked in the linked docs.

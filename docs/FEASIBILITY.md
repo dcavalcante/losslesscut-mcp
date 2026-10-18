@@ -35,7 +35,7 @@ Research checked 2026-10-18 against LosslessCut `master` docs/source and the loc
 
 ## Existing solutions and product rationale
 
-Searches for `losslesscut-mcp` did not surface an existing dedicated LosslessCut MCP project or npm package in the results checked. Comparable media MCP projects exist, including `media-mcp-editor` and `mcp-video-editing`, and several expose broad FFmpeg workflows. Their existence does not replace a LosslessCut-specific adapter: this project's reason to exist is to create/reuse native `.llc` cut plans, operate LosslessCut's editor/export path, and return verifiable outputs while keeping direct probing clearly labeled. This rationale remains provisional until the real workflow is demonstrated.
+Searches for `losslesscut-mcp` did not surface an existing dedicated LosslessCut MCP project or npm package in the results checked. Comparable media MCP projects exist, including [media-mcp-editor](https://github.com/ofekfell/media-mcp-editor) and [mcp-video-editing](https://github.com/mfortne/mcp-video-editing), and several expose broad FFmpeg workflows. Their existence does not replace a LosslessCut-specific adapter: this project's reason to exist is to create/reuse native `.llc` cut plans, operate LosslessCut's editor/export path, and return verifiable outputs while keeping direct probing clearly labeled. This rationale remains provisional until the real workflow is demonstrated.
 
 ## Candidate workflow assessment
 
