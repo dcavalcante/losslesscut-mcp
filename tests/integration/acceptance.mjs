@@ -24,18 +24,36 @@ const workspace = await mkdtemp(join(tmpdir(), 'losslesscut-mcp-acceptance-'));
 const inputDir = join(workspace, 'input');
 const firstOutputDir = join(workspace, 'output-success');
 const secondOutputDir = join(workspace, 'output-confirmation');
+const staleOutputDir = join(workspace, 'output-stale');
+const crashOutputDir = join(workspace, 'output-crash');
 const configDir = join(workspace, 'config-owned');
 const ordinaryConfigDir = join(workspace, 'config-ordinary');
 const confirmationConfigDir = join(workspace, 'config-confirmation');
+const crashConfigDir = join(workspace, 'config-crash');
 const userDataDir = join(workspace, 'userdata');
 const secondUserDataDir = join(workspace, 'userdata-confirmation');
+const crashUserDataDir = join(workspace, 'userdata-crash');
 const ordinaryHomeDir = join(workspace, 'ordinary-home');
 const ordinaryOutputDir = join(workspace, 'output-ordinary');
 const logsDir = join(workspace, 'logs');
 await Promise.all(
-  [inputDir, firstOutputDir, secondOutputDir, configDir, ordinaryConfigDir, confirmationConfigDir, userDataDir, secondUserDataDir, ordinaryHomeDir, ordinaryOutputDir, logsDir].map(dir =>
-    mkdir(dir, { recursive: true }),
-  ),
+  [
+    inputDir,
+    firstOutputDir,
+    secondOutputDir,
+    staleOutputDir,
+    crashOutputDir,
+    configDir,
+    ordinaryConfigDir,
+    confirmationConfigDir,
+    crashConfigDir,
+    userDataDir,
+    secondUserDataDir,
+    crashUserDataDir,
+    ordinaryHomeDir,
+    ordinaryOutputDir,
+    logsDir,
+  ].map(dir => mkdir(dir, { recursive: true })),
 );
 const mediaPath = join(inputDir, 'fixture.mp4');
 let projectPath;
@@ -202,7 +220,11 @@ function mcpClient(port, exportTimeoutMs, appConfigDir = configDir) {
     stderr: 'pipe',
   });
   const client = new Client({ name: 'losslesscut-mcp-acceptance', version: '0.1.0' });
-  return { client, transport, connect: () => client.connect(transport) };
+  const stderrPath = join(logsDir, `mcp-${port}.stderr.log`);
+  const stderr = createWriteStream(stderrPath, { flags: 'a' });
+  transport.stderr?.pipe(stderr);
+  transport.onclose = () => stderr.end();
+  return { client, transport, stderrPath, connect: () => client.connect(transport) };
 }
 
 async function assertMedia(filePath) {
@@ -246,12 +268,24 @@ function nativeAction(port, action, body) {
   });
 }
 
+async function nativeAwaitEvent(port, eventName) {
+  const response = await fetch(`http://127.0.0.1:${port}/api/await-event/${eventName}`, {
+    method: 'POST',
+    headers: { host: `127.0.0.1:${port}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
+
 let app;
 let ownedLifecycle;
 let ordinaryApp;
 let confirmationApp;
+let crashApp;
 let mcp;
 let confirmationMcp;
+let crashMcp;
 let firstExitCode;
 let secondExitCode;
 let firstAppPid;
@@ -268,6 +302,8 @@ let secondAppErrPath;
 let lifecycleProbe;
 let occupiedPortProbe;
 let isolationProbe;
+let crashProbe;
+let staleOutputProbe;
 try {
   await execFile(
     process.env['FFMPEG_PATH'] || 'ffmpeg',
@@ -450,10 +486,29 @@ try {
   assert.equal(generatedInspection.structuredContent.segmentCount, 2);
   assert.equal(generatedInspection.structuredContent.segments.filter(segment => segment.selected).length, 2);
 
-  const exported = await mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: firstOutputDir } });
+  const [firstDuplicatePair, secondDuplicatePair] = await Promise.all([
+    mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: firstOutputDir } }),
+    mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: firstOutputDir } }),
+  ]);
+  const exported = [firstDuplicatePair, secondDuplicatePair].find(result => result.structuredContent.status === 'verified');
+  const duplicateExport = [firstDuplicatePair, secondDuplicatePair].find(result => result.structuredContent.code === 'output_directory_not_empty');
+  assert.ok(exported, JSON.stringify([firstDuplicatePair.structuredContent, secondDuplicatePair.structuredContent]));
+  assert.ok(duplicateExport, JSON.stringify([firstDuplicatePair.structuredContent, secondDuplicatePair.structuredContent]));
   assert.equal(exported.structuredContent.status, 'verified', JSON.stringify(exported.structuredContent));
   assert.equal(exported.structuredContent.outputs.length, 2);
   for (const output of exported.structuredContent.outputs) await assertMedia(output.path);
+  assert.equal(duplicateExport.structuredContent.status, 'error');
+  assert.equal(duplicateExport.structuredContent.code, 'output_directory_not_empty');
+  assert.equal((await readdir(firstOutputDir)).filter(name => name.endsWith('.mp4')).length, 2, 'Repeated request must not start a second export or add outputs.');
+
+  const staleArtifact = join(staleOutputDir, 'stale.txt');
+  await writeFile(staleArtifact, 'preserve me');
+  const staleHashBefore = await execFile('sha256sum', [staleArtifact]);
+  const staleResult = await mcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: staleOutputDir } });
+  assert.equal(staleResult.structuredContent.status, 'error');
+  assert.equal(staleResult.structuredContent.code, 'output_directory_not_empty');
+  assert.equal((await execFile('sha256sum', [staleArtifact])).stdout, staleHashBefore.stdout, 'Stale output must be preserved byte-for-byte.');
+  staleOutputProbe = { result: staleResult.structuredContent, artifact: staleArtifact, preserved: true };
   const ordinaryExport = await ordinaryMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: ordinaryOutputDir } });
   assert.equal(ordinaryExport.structuredContent.status, 'verified', JSON.stringify(ordinaryExport.structuredContent));
   assert.equal(ordinaryExport.structuredContent.outputs.length, 2);
@@ -514,8 +569,48 @@ try {
   confirmationMcpPid = confirmationMcp.transport.pid;
   const uncertain = await confirmationMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: secondOutputDir } });
   assert.equal(uncertain.structuredContent.status, 'uncertain', JSON.stringify(uncertain.structuredContent));
+  assert.equal(uncertain.structuredContent.code, 'export_outcome_uncertain');
+  assert.ok(
+    uncertain.structuredContent.details.observedArtifacts.some(artifact => artifact.kind === 'project' && artifact.validProject === false),
+    JSON.stringify(uncertain.structuredContent.details),
+  );
   const remaining = await readdir(secondOutputDir);
   assert.ok(!remaining.some(name => name.endsWith('.mp4')), 'No media output should exist without export-start confirmation.');
+  const retryAfterUncertain = await confirmationMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: secondOutputDir } });
+  assert.equal(retryAfterUncertain.structuredContent.code, 'export_session_quarantined');
+
+  const crashPort = await availablePort();
+  crashApp = await startLosslessCut({
+    port: crashPort,
+    outputDirectory: crashOutputDir,
+    configDirectory: crashConfigDir,
+    userDir: crashUserDataDir,
+    exportConfirmEnabled: false,
+    label: 'crash-during-export',
+  });
+  crashMcp = mcpClient(crashPort, 30_000, crashConfigDir);
+  await crashMcp.connect();
+  const exportStartPromise = nativeAwaitEvent(crashPort, 'export-start');
+  const crashingExportPromise = crashMcp.client
+    .callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: crashOutputDir } })
+    .catch(error => ({ clientError: error instanceof Error ? error.message : String(error) }));
+  const nativeExportStart = await exportStartPromise;
+  assert.equal(nativeExportStart.eventName, 'export-start');
+  const crashExit = await stopOwnedProcess(crashApp);
+  crashApp = undefined;
+  const crashedExport = await crashingExportPromise;
+  assert.equal(crashedExport.structuredContent.status, 'uncertain', JSON.stringify(crashedExport.structuredContent));
+  assert.equal(crashedExport.structuredContent.code, 'export_outcome_uncertain');
+  assert.equal(crashedExport.structuredContent.details.retryAllowedOnThisSession, false);
+  const crashRetry = await crashMcp.client.callTool({ name: 'losslesscut_export_project', arguments: { projectPath, outputDirectory: crashOutputDir } });
+  assert.equal(crashRetry.structuredContent.code, 'export_session_quarantined');
+  crashProbe = {
+    exportStart: nativeExportStart,
+    appExit: crashExit,
+    mcpResult: crashedExport.structuredContent,
+    retry: crashRetry.structuredContent,
+    observedDirectory: await readdir(crashOutputDir),
+  };
 
   secondExitCode = await stopOwnedProcess(confirmationApp);
   confirmationApp = undefined;
@@ -534,6 +629,9 @@ try {
     stderrLogs: [ordinaryAppErrPath, firstAppErrPath, secondAppErrPath],
     isolatedProfile: { configDir, userDataDir },
     occupiedPort: occupiedPortProbe,
+    staleOutput: staleOutputProbe,
+    duplicateExport: duplicateExport.structuredContent,
+    crashDuringExport: crashProbe,
     concurrentProfileIsolation: isolationProbe,
     sameProfileSecondLaunch: lifecycleProbe,
     evidenceDirectory: workspace,
@@ -547,8 +645,12 @@ try {
   await writeFile(join(logsDir, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
 } finally {
-  await Promise.all([ownedLifecycle?.stop() ?? stopOwnedProcess(app), stopOwnedProcess(ordinaryApp), stopOwnedProcess(confirmationApp)]);
-  await Promise.all([mcp ? mcp.client.close().catch(() => undefined) : Promise.resolve(), confirmationMcp ? confirmationMcp.client.close().catch(() => undefined) : Promise.resolve()]);
+  await Promise.all([ownedLifecycle?.stop() ?? stopOwnedProcess(app), stopOwnedProcess(ordinaryApp), stopOwnedProcess(confirmationApp), stopOwnedProcess(crashApp)]);
+  await Promise.all([
+    mcp ? mcp.client.close().catch(() => undefined) : Promise.resolve(),
+    confirmationMcp ? confirmationMcp.client.close().catch(() => undefined) : Promise.resolve(),
+    crashMcp ? crashMcp.client.close().catch(() => undefined) : Promise.resolve(),
+  ]);
   if (process.env['LOSSLESSCUT_KEEP_TEST_OUTPUT'] !== '1') await rm(workspace, { recursive: true, force: true });
   else console.log(`Acceptance evidence retained at ${workspace}`);
 }

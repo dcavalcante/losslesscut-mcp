@@ -5,11 +5,13 @@ import { basename, join, resolve } from 'node:path';
 import JSON5 from 'json5';
 import type { AppConfig } from '../config.js';
 import { IntegrationError } from './errors.js';
+import { inspectProject } from './inspection.js';
 import type { LosslessCutApi } from './losslesscut-api.js';
 import { authorizeOutputDirectory, authorizePath, isPathWithinDirectory, loadProject, type ProjectInfo } from './projects.js';
 
 const execFile = promisify(execFileCallback);
 let operationTail: Promise<void> = Promise.resolve();
+const quarantinedExportSessions = new WeakSet<LosslessCutApi>();
 
 async function withEditorLock<T>(operation: () => Promise<T>): Promise<T> {
   const result = operationTail.then(operation, operation);
@@ -71,6 +73,40 @@ async function probeMedia(path: string, ffprobePath: string) {
   }
 }
 
+async function inspectObservedArtifacts(outputDirectory: string, beforeExport: Set<string>, config: AppConfig) {
+  const entries = await readdir(outputDirectory, { withFileTypes: true }).catch(() => []);
+  const observed = [];
+  for (const entry of entries) {
+    if (beforeExport.has(entry.name)) continue;
+    const path = join(outputDirectory, entry.name);
+    if (!entry.isFile()) {
+      observed.push({ path, kind: entry.isDirectory() ? 'directory' : 'non-regular', readableMedia: false });
+      continue;
+    }
+    const file = await stat(path).catch(() => undefined);
+    if (!file?.isFile()) {
+      observed.push({ path, kind: 'changed-during-reconciliation', readableMedia: false });
+      continue;
+    }
+    if (entry.name.toLowerCase().endsWith('.llc')) {
+      try {
+        await inspectProject(config, path);
+        observed.push({ path, kind: 'project', sizeBytes: file.size, validProject: true });
+      } catch (error) {
+        observed.push({ path, kind: 'project', sizeBytes: file.size, validProject: false, validationError: error instanceof Error ? error.message : String(error) });
+      }
+      continue;
+    }
+    try {
+      await probeMedia(path, config.ffprobePath);
+      observed.push({ path, kind: 'file', sizeBytes: file.size, readableMedia: true });
+    } catch (error) {
+      observed.push({ path, kind: 'file', sizeBytes: file.size, readableMedia: false, probeError: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return observed;
+}
+
 async function checkOutputDirectoryEmptyBeforeOpen(config: AppConfig, project: ProjectInfo, outputDirectory: string): Promise<void> {
   if (isPathWithinDirectory(outputDirectory, project.projectPath) || isPathWithinDirectory(outputDirectory, project.mediaPath)) {
     throw new IntegrationError('unsafe_output_directory', 'The output directory must be separate from the project and input media.');
@@ -109,6 +145,12 @@ export async function openProjectWorkflow(config: AppConfig, api: LosslessCutApi
 
 export async function exportProjectWorkflow(config: AppConfig, api: LosslessCutApi, projectPath: string, outputPath: string) {
   return withEditorLock(async () => {
+    if (quarantinedExportSessions.has(api)) {
+      throw new IntegrationError(
+        'export_session_quarantined',
+        'This LosslessCut API session had an uncertain export. Refusing another export because late events cannot be correlated; restart the MCP-owned LosslessCut session and reconcile its output directory first.',
+      );
+    }
     const project = await loadProject(projectPath, config);
     const outputDirectory = await authorizeOutputDirectory(outputPath, config);
     await checkOutputDirectoryEmptyBeforeOpen(config, project, outputDirectory);
@@ -123,7 +165,13 @@ export async function exportProjectWorkflow(config: AppConfig, api: LosslessCutA
     const startPromise = api.awaitExportStart(controller.signal);
     const completePromise = api.awaitExportComplete(controller.signal);
     const eventPromises = Promise.all([startPromise, completePromise]);
+    // Events can reject while the action request is still pending, especially
+    // when LosslessCut exits. Attach a handler immediately to avoid an
+    // unhandled rejection before the workflow reaches its await below.
+    void eventPromises.catch(() => undefined);
+    let exportDispatched = false;
     try {
+      exportDispatched = true;
       await api.action('export');
       const [started, completed] = await eventPromises;
       if (started.path !== currentProject.mediaPath) {
@@ -166,14 +214,21 @@ export async function exportProjectWorkflow(config: AppConfig, api: LosslessCutA
       };
     } catch (error) {
       controller.abort(error);
-      if (error instanceof IntegrationError) throw error;
-      if (controller.signal.aborted) {
+      if (error instanceof IntegrationError && error.code === 'export_failed') {
+        throw new IntegrationError(error.code, error.message, error.outcome, { observedArtifacts: await inspectObservedArtifacts(outputDirectory, beforeExport, config) });
+      }
+      if (exportDispatched && (error instanceof IntegrationError ? error.outcome === 'uncertain' || error.code === 'api_unavailable' || error.code === 'api_http_error' : true)) {
+        quarantinedExportSessions.add(api);
+        const observedArtifacts = await inspectObservedArtifacts(outputDirectory, beforeExport, config);
+        const detail = error instanceof Error ? error.message : String(error);
         throw new IntegrationError(
           'export_outcome_uncertain',
-          'Timed out while waiting for LosslessCut export events. The native operation may still be running; do not retry until outputs are reconciled.',
+          `LosslessCut export outcome is uncertain: ${detail}. This API session is quarantined to prevent late events from being attributed to another export. Reconcile observed files before restarting or retrying.`,
           'uncertain',
+          { observedArtifacts, retryAllowedOnThisSession: false },
         );
       }
+      if (error instanceof IntegrationError) throw error;
       throw new IntegrationError('export_outcome_uncertain', `LosslessCut export outcome is uncertain: ${error instanceof Error ? error.message : String(error)}`, 'uncertain');
     } finally {
       clearTimeout(timeout);
@@ -188,5 +243,6 @@ export function toToolError(error: unknown) {
     status: integrationError.outcome === 'uncertain' ? ('uncertain' as const) : ('error' as const),
     code: integrationError.code,
     message: integrationError.message,
+    ...(integrationError.details == null ? {} : { details: integrationError.details }),
   };
 }

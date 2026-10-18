@@ -3,6 +3,7 @@ export class IntegrationError extends Error {
     readonly code: string,
     message: string,
     readonly outcome: 'known-failure' | 'uncertain' = 'known-failure',
+    readonly details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'IntegrationError';

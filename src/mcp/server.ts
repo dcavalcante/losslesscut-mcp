@@ -56,6 +56,7 @@ const exportOutputSchema = z.object({
   outputs: z.array(z.object({ path: z.string(), duration: z.number(), streams: z.string().array() })).optional(),
   editorStateIntrospectable: z.boolean().optional(),
   eventCorrelation: z.string().optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
 const inspectionErrorSchema = z.object({

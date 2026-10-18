@@ -25,7 +25,7 @@ LOSSLESSCUT_KEEP_TEST_OUTPUT=1 npm run test:acceptance
 
 The harness generated a 12-second H.264/AAC MP4 with one-second keyframes and an LLC v2 project with selected ranges `[1,3]` and `[5,7]`. It created separate temporary app config and Electron user-data directories, selected an available loopback port, waited for HTTP and renderer readiness, ran the workflow through MCP stdio using the official MCP client, FFprobed and decoded outputs, then terminated only the application children it started.
 
-Latest passing evidence: `/tmp/losslesscut-mcp-acceptance-Lusibo`.
+Latest baseline evidence before export-recovery work: `/tmp/losslesscut-mcp-acceptance-Lusibo`.
 
 - Two outputs: `fixture-00.00.01.000-00.00.03.000-keep-1.mp4` and `fixture-00.00.05.000-00.00.07.000-keep-2.mp4`.
 - Each is 2.026667 seconds with H.264 video and AAC audio; FFmpeg decoded both without error.
@@ -43,6 +43,21 @@ Latest passing evidence: `/tmp/losslesscut-mcp-acceptance-Lusibo`.
 Earlier runs exposed two useful failure modes. First, HTTP root returns 200 before the renderer is ready; an initial open attempt timed out. The harness now waits for the source-derived FFprobe startup log marker emitted after renderer-ready. Second, a fixture with only one keyframe caused stream-copy exports longer than the requested ranges (about 3 and 7 seconds). A one-second GOP produced requested two-second ranges within container timing. LosslessCut's stream-copy boundaries follow keyframes; source fixture characteristics matter.
 
 The CUA inventory exposed no native app surface, so no visual observation of the confirmation dialog or loaded segment timeline was possible. The confirmation behavior is established by configuration, missing native export-start event, and the uncertain outcome; we do not claim visual GUI confirmation or introspection of loaded segments.
+
+## Export recovery evidence (Scope 5)
+
+Latest serialized native recovery run passed on the same LosslessCut 3.69.0 source build. Reproduce with the command above and `LOSSLESSCUT_KEEP_TEST_OUTPUT=1`. The retained report, generated media, application stdout/stderr, and MCP stderr are under `/tmp/losslesscut-mcp-acceptance-CgflJH`.
+
+| Scenario | Result and evidence |
+| --- | --- |
+| Normal export | **Verified.** The official MCP stdio client received two exported H.264/AAC outputs; both passed FFprobe and full decode. The input hash stayed unchanged. |
+| Stale output | **Definite refusal.** A pre-existing sentinel file caused `output_directory_not_empty`; byte comparison confirmed it was preserved. |
+| Concurrent/repeated request in one MCP process | **One export only.** The operation lock serialized calls. One completed export produced two files; the queued call saw the now-nonempty directory and returned `output_directory_not_empty`. A repeat after an uncertain export is refused by session quarantine. No duplicate files were produced. This does not coordinate separate MCP processes or external API clients. |
+| App exit after native `export-start` | **Uncertain, not success.** The harness sent SIGTERM to its own LosslessCut process after observing `export-start`. MCP returned `export_outcome_uncertain`, reported no observed artifacts, and rejected a retry with `export_session_quarantined`. The child exited on SIGTERM; the harness cleaned up only owned processes. This run did not produce a partial file. |
+| Export confirmation timeout | **Uncertain, not success.** No start event arrived before timeout. Reconciliation found LosslessCut's companion `.llc` file but marked it invalid because its referenced media was absent in that output directory; no MP4 was present. Retry on this API object is blocked. |
+| Late completion event after timeout | **Deterministic unit simulation only.** The delayed event did not turn a timed-out operation into success or permit another export on the same API object. This is not native evidence; upstream offers no operation ID or subscription-ready acknowledgement. |
+
+The application-exit native case also exercises the event-listener rejection race: the MCP process stayed alive and returned an uncertain tool result after LosslessCut became unavailable. Evidence report `crashDuringExport` records event, process exit, result, retry refusal, and observed directory. The native run did not establish safe correlation across separate MCP processes or arbitrary local clients. The implementation therefore quarantines an API object after ambiguous dispatch and requires external reconciliation/restart; it never retries automatically.
 
 ## Confirmed interface behavior
 
